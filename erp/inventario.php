@@ -199,6 +199,9 @@ try {
 }
 ?>
 
+<!-- Librería JsBarcode para renderizar códigos de barras -->
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-box-seam text-primary me-2"></i> Inventario e Insumos</h2>
     <button type="button" class="btn btn-primary fw-bold" data-bs-toggle="modal" data-bs-target="#modalNuevoProducto">
@@ -231,7 +234,7 @@ try {
                 <thead class="table-dark">
                     <tr>
                         <th>Foto</th>
-                        <th>Código</th>
+                        <th>Código / Barras</th>
                         <th>Nombre / Descripción</th>
                         <th>Presentación</th>
                         <th>Contenido por Empaque</th>
@@ -247,17 +250,39 @@ try {
                         <tr><td colspan="10" class="text-center py-3 text-muted">No hay productos registrados en el inventario.</td></tr>
                     <?php else: ?>
                         <?php foreach ($productos as $p): ?>
-                            <?php 
+                            <?php
                                 $factor = floatval($p['unidades_por_empaque'] ?? 1);
                                 if ($factor <= 0) $factor = 1;
                                 $empaquesEquivalentes = $p['stock_actual'] / $factor;
+                                $codigoSanitizado = htmlspecialchars($p['codigo']);
+                                $nombreSanitizado = htmlspecialchars($p['nombre']);
                             ?>
                             <tr>
                                 <td>
                                     <img src="<?= htmlspecialchars($p['imagen']) ?>" alt="Foto" style="width: 40px; height: 40px; object-fit: cover;" class="rounded border">
                                 </td>
-                                <td class="fw-bold"><?= htmlspecialchars($p['codigo']) ?></td>
-                                <td><?= htmlspecialchars($p['nombre']) ?></td>
+                                <td>
+                                    <div class="fw-bold"><?= $codigoSanitizado ?></div>
+                                    <!-- Canvas para código de barras -->
+                                    <canvas id="barcode_<?= $p['id'] ?>" style="max-height: 30px; max-width: 120px;"></canvas>
+                                    <div class="mt-1">
+                                        <button class="btn btn-sm btn-outline-dark py-0 px-1" style="font-size:0.7rem;" onclick="descargarCodigoBarras('<?= $p['id'] ?>', '<?= $codigoSanitizado ?>')" title="Descargar Código de Barras">
+                                            <i class="bi bi-download"></i> Barras
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-primary py-0 px-1" style="font-size:0.7rem;" onclick="verModalQR('<?= $codigoSanitizado ?>', '<?= $nombreSanitizado ?>')" title="Ver Código QR">
+                                            <i class="bi bi-qr-code"></i> QR
+                                        </button>
+                                    </div>
+                                    <script>
+                                        JsBarcode("#barcode_<?= $p['id'] ?>", "<?= $codigoSanitizado ?>", {
+                                            format: "CODE128",
+                                            displayValue: false,
+                                            height: 30,
+                                            margin: 0
+                                        });
+                                    </script>
+                                </td>
+                                <td><?= $nombreSanitizado ?></td>
                                 <td><span class="badge bg-secondary"><?= htmlspecialchars($p['tipo_unidad']) ?></span></td>
                                 <td><?= number_format($factor, 2) ?> unids/litros</td>
                                 <td class="text-end">$<?= number_format($p['costo_unitario'], 2) ?></td>
@@ -294,6 +319,25 @@ try {
                     <?php endif; ?>
                 </tbody>
             </table>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: VISUALIZAR CÓDIGO QR -->
+<div class="modal fade" id="modalQR" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content text-center">
+            <div class="modal-header bg-dark text-white">
+                <h6 class="modal-title fw-bold" id="qrModalTitle">Código QR</h6>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <img id="qrImage" src="" alt="Código QR" class="img-fluid border p-2 mb-2">
+                <p id="qrCodeText" class="fw-bold mb-1 text-primary"></p>
+                <a id="btnDownloadQR" href="" download="" class="btn btn-sm btn-success w-100 fw-bold">
+                    <i class="bi bi-download me-1"></i> Descargar QR
+                </a>
+            </div>
         </div>
     </div>
 </div>
@@ -502,7 +546,7 @@ try {
                                     </div>
                                 </div>
                                 <div class="alert alert-info py-1 px-3 mb-0 text-center" style="font-size:0.9rem;">
-                                    <i class="bi bi-calculator me-1"></i> <strong>Inventario resultantes:</strong> 
+                                    <i class="bi bi-calculator me-1"></i> <strong>Inventario resultantes:</strong>
                                     <span id="lbl_unidades_totales" class="fw-bold text-primary">0</span> unidades / litros individuales a ingresar.
                                 </div>
                             </div>
@@ -604,6 +648,30 @@ function abrirModalEditar(prod) {
     document.getElementById('edit_stock_minimo').value = prod.stock_minimo;
 
     const modal = new bootstrap.Modal(document.getElementById('modalEditarProducto'));
+    modal.show();
+}
+
+// FUNCIONES PARA CÓDIGOS DE BARRAS Y QR
+function descargarCodigoBarras(id, codigo) {
+    const canvas = document.getElementById('barcode_' + id);
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = 'barcode_' + codigo + '.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+}
+
+function verModalQR(codigo, nombre) {
+    const urlQR = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(codigo);
+    document.getElementById('qrModalTitle').innerText = nombre;
+    document.getElementById('qrCodeText').innerText = 'Código: ' + codigo;
+    document.getElementById('qrImage').src = urlQR;
+
+    const btnDownload = document.getElementById('btnDownloadQR');
+    btnDownload.href = urlQR;
+    btnDownload.download = 'QR_' + codigo + '.png';
+
+    const modal = new bootstrap.Modal(document.getElementById('modalQR'));
     modal.show();
 }
 </script>
