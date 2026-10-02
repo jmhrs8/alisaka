@@ -1,6 +1,71 @@
 <?php
 require_once 'includes/header.php';
 
+// =========================================================================
+// INCLUSIÓN DE PHPMAILER Y FUNCIÓN DE ALERTA DE STOCK BAJO
+// =========================================================================
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+// Ajusta las rutas según donde tengas guardado PHPMailer
+// Si utilizas Composer, puedes usar: require_once 'vendor/autoload.php';
+if (file_exists('PHPMailer/src/Exception.php')) {
+    require_once 'PHPMailer/src/Exception.php';
+    require_once 'PHPMailer/src/PHPMailer.php';
+    require_once 'PHPMailer/src/SMTP.php';
+}
+
+function enviarAlertaStockBajo($codigo, $nombre, $stockActual, $stockMinimo, $tipoUnidad) {
+    if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+        return false;
+    }
+
+    $mail = new PHPMailer(true);
+
+    try {
+        // Configuración del servidor SMTP
+        $mail->isSMTP();
+        $mail->Host       = 'smtp.gmail.com';
+        $mail->SMTPAuth   = true;
+        
+        // --- CONFIGURA TUS CREDENCIALES AQUÍ ---
+        $mail->Username   = 'tu_correo@gmail.com'; 
+        $mail->Password   = 'czyydevgpokxkljm'; // Contraseña de aplicación
+        
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = 587;
+
+        // Destinatarios y asunto
+        $mail->setFrom('tu_correo@gmail.com', 'Sistema ERP - Alerta de Stock');
+        $mail->addAddress('admin@tuempresa.com'); // Correo que recibe la notificación
+
+        $mail->isHTML(true);
+        $mail->CharSet = 'UTF-8';
+        $mail->Subject = "⚠️ ALERTA: Stock bajo en producto - {$nombre}";
+        
+        $mail->Body = "
+            <div style='font-family: Arial, sans-serif; padding: 20px; border: 1px solid #dc3545; border-radius: 8px;'>
+                <h2 style='color: #dc3545; margin-top:0;'>⚠️ Alerta de Stock Bajo</h2>
+                <p>El siguiente producto ha llegado a su nivel mínimo de inventario o se encuentra por debajo:</p>
+                <table style='width: 100%; border-collapse: collapse; text-align: left;'>
+                    <tr><td style='padding: 5px 0;'><strong>Código:</strong></td><td>{$codigo}</td></tr>
+                    <tr><td style='padding: 5px 0;'><strong>Producto:</strong></td><td>{$nombre}</td></tr>
+                    <tr><td style='padding: 5px 0;'><strong>Stock Actual:</strong></td><td style='color: #dc3545; font-weight: bold;'>{$stockActual} {$tipoUnidad}(s)</td></tr>
+                    <tr><td style='padding: 5px 0;'><strong>Stock Mínimo:</strong></td><td>{$stockMinimo} {$tipoUnidad}(s)</td></tr>
+                </table>
+                <br>
+                <p><em>Por favor gestione el reabastecimiento con el proveedor correspondiente.</em></p>
+            </div>
+        ";
+
+        $mail->send();
+        return true;
+    } catch (Exception $e) {
+        error_log("Error al enviar el correo de alerta: " . $mail->ErrorInfo);
+        return false;
+    }
+}
+
 $mensajeExito = '';
 $mensajeError = '';
 
@@ -78,7 +143,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modificar_producto'])
             $stmtUp = $pdo->prepare("UPDATE productos SET codigo = ?, nombre = ?, tipo_unidad = ?, unidades_por_empaque = ?, costo_unitario = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?, imagen = ? WHERE id = ?");
             $stmtUp->execute([$codigo, $nombre, $tipoUnidad, $unidadesPorEmpaque, $costoUnitario, $precioVenta, $stockActual, $stockMinimo, $fotoUrl, $idEditar]);
 
-            $mensajeExito = "Producto '{$nombre}' actualizado correctamente.";
+            // EVALUAR SI BAJÓ A NIVEL DE ALERTA DE STOCK BAJO
+            if ($stockActual <= $stockMinimo) {
+                enviarAlertaStockBajo($codigo, $nombre, $stockActual, $stockMinimo, $tipoUnidad);
+                $mensajeExito = "Producto '{$nombre}' actualizado. ⚠️ ¡Se ha enviado un correo de alerta por stock bajo!";
+            } else {
+                $mensajeExito = "Producto '{$nombre}' actualizado correctamente.";
+            }
         } catch (\PDOException $e) {
             $mensajeError = "Error al actualizar el producto: " . $e->getMessage();
         }
@@ -97,14 +168,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
     $unidadesPorEmpaque = floatval($_POST['unidades_por_empaque'] ?? 1);
     $precioVenta        = floatval($_POST['precio_venta'] ?? 0);
     $stockMinimo        = floatval($_POST['stock_minimo'] ?? 5);
-    $costoUnitario      = floatval($_POST['costo_unitario'] ?? 0); // Costo por empaque/unidad comprada
-    $cantidadEmpaques   = floatval($_POST['stock_inicial'] ?? 0);  // Cantidad de cajas/tambos/unidades compradas
+    $costoUnitario      = floatval($_POST['costo_unitario'] ?? 0); 
+    $cantidadEmpaques   = floatval($_POST['stock_inicial'] ?? 0);  
 
     if ($unidadesPorEmpaque <= 0) {
         $unidadesPorEmpaque = 1;
     }
 
-    // El stock real en inventario se guarda en UNIDADES INDIVIDUALES (Litros, Piezas, etc.)
     $stockInicialBase = $cantidadEmpaques * $unidadesPorEmpaque;
 
     $proveedorId      = !empty($_POST['proveedor_id']) ? intval($_POST['proveedor_id']) : null;
@@ -113,7 +183,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
     $fechaVencimiento = !empty($_POST['fecha_vencimiento']) ? $_POST['fecha_vencimiento'] : null;
     $tipoComprobante  = $_POST['tipo_comprobante'] ?? 'sin_comprobante';
 
-    // CÁLCULO DE MONTO TOTAL CON IVA SI ES FACTURA
     $subtotal = $cantidadEmpaques * $costoUnitario;
     $montoIva = ($tipoComprobante === 'factura') ? ($subtotal * 0.16) : 0.00;
     $montoTotal = $subtotal + $montoIva;
@@ -125,7 +194,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
         try {
             $pdo->beginTransaction();
 
-            // Guardar Fotografía
             if (!empty($_FILES['fotografia']['name'])) {
                 if (!is_dir($dirFotos)) mkdir($dirFotos, 0755, true);
                 $ext = strtolower(pathinfo($_FILES['fotografia']['name'], PATHINFO_EXTENSION));
@@ -137,7 +205,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
                 }
             }
 
-            // Guardar Comprobante
             if (!empty($_FILES['comprobante']['name'])) {
                 if (!is_dir($dirFacturas)) mkdir($dirFacturas, 0755, true);
                 $ext = strtolower(pathinfo($_FILES['comprobante']['name'], PATHINFO_EXTENSION));
@@ -149,12 +216,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
                 }
             }
 
-            // 1. Insertar Producto (Guardando stock base total en piezas/litros)
             $stmtProd = $pdo->prepare("INSERT INTO productos (codigo, nombre, tipo_unidad, unidades_por_empaque, costo_unitario, precio_venta, stock_actual, stock_minimo, imagen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $stmtProd->execute([$codigo, $nombre, $tipoUnidad, $unidadesPorEmpaque, $costoUnitario, $precioVenta, $stockInicialBase, $stockMinimo, $fotoUrl]);
             $productoId = $pdo->lastInsertId();
 
-            // 2. Insertar Entrada y Cuentas/Egresos
             if ($cantidadEmpaques > 0) {
                 $fechaPago = ($estatusPago === 'pagado') ? date('Y-m-d H:i:s') : null;
 
@@ -174,7 +239,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
             }
 
             $pdo->commit();
-            $mensajeExito = "Producto '{$nombre}' registrado exitosamente.";
+
+            // EVALUAR SI EL NUEVO PRODUCTO REGISTRA UN STOCK BAJO DESDE SU CREACIÓN
+            if ($stockInicialBase <= $stockMinimo) {
+                enviarAlertaStockBajo($codigo, $nombre, $stockInicialBase, $stockMinimo, $tipoUnidad);
+                $mensajeExito = "Producto '{$nombre}' registrado exitosamente. ⚠️ ¡Se envió correo de alerta por stock inicial bajo!";
+            } else {
+                $mensajeExito = "Producto '{$nombre}' registrado exitosamente.";
+            }
+
         } catch (\PDOException $e) {
             $pdo->rollBack();
             $mensajeError = "Error al guardar el producto: " . $e->getMessage();
@@ -651,7 +724,6 @@ function abrirModalEditar(prod) {
     modal.show();
 }
 
-// FUNCIONES PARA CÓDIGOS DE BARRAS Y QR
 function descargarCodigoBarras(id, codigo) {
     const canvas = document.getElementById('barcode_' + id);
     if (!canvas) return;
