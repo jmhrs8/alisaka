@@ -39,64 +39,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['liquidar_cxc'])) {
                 $saldoActual = floatval($cuenta['monto']);
 
                 if ($montoAbono >= $saldoActual) {
-                    $montoCobrado = $saldoActual;
+                    $montoCobrado =$saldoActual;
                     $nuevoSaldo   = 0.00;
                     $nuevoEstatus = 'cobrado';
                 } else {
-                    $montoCobrado = $montoAbono;
-                    $nuevoSaldo   = $saldoActual - $montoAbono;
+                    $montoCobrado =$montoAbono;
+                    $nuevoSaldo   = $saldoActual -$montoAbono;
                     $nuevoEstatus = 'pendiente';
                 }
 
                 // 1. Guardar o actualizar en cuentas_cobrar
                 if (!empty($cuenta['id'])) {
-                    $stmtUp = $pdo->prepare("UPDATE cuentas_cobrar SET monto = ?, estatus = ?, fecha_cobro = NOW() WHERE id = ?");
-                    $stmtUp->execute([$nuevoSaldo, $nuevoEstatus, $cuenta['id']]);
+                    $stmtUp =$pdo->prepare("UPDATE cuentas_cobrar SET monto = ?, estatus = ?, fecha_cobro = NOW() WHERE id = ?");
+                    $stmtUp->execute([$nuevoSaldo, $nuevoEstatus,$cuenta['id']]);
                 } else {
-                    $stmtIns = $pdo->prepare("INSERT INTO cuentas_cobrar (salida_id, cliente, monto, estatus, fecha_emision, fecha_cobro) VALUES (?, ?, ?, ?, NOW(), NOW())");
-                    $stmtIns->execute([$cuenta['salida_id'], $cuenta['cliente'], $nuevoSaldo, $nuevoEstatus]);
+                    $stmtIns =$pdo->prepare("INSERT INTO cuentas_cobrar (salida_id, cliente, monto, estatus, fecha_emision, fecha_cobro) VALUES (?, ?, ?, ?, NOW(), NOW())");
+                    $stmtIns->execute([$cuenta['salida_id'],$cuenta['cliente'], $nuevoSaldo,$nuevoEstatus]);
                 }
 
                 // 2. Actualizar estatus en ventas cuando se liquida por completo
                 if ($nuevoEstatus === 'cobrado' && !empty($cuenta['salida_id'])) {
-                    $stmtSalidaUp = $pdo->prepare("UPDATE salidas SET tipo_pago = 'contado', estado_cobro = 'cobrado' WHERE id = ?");
+                    $stmtSalidaUp =$pdo->prepare("UPDATE salidas SET tipo_pago = 'contado', estado_cobro = 'cobrado' WHERE id = ?");
                     $stmtSalidaUp->execute([$cuenta['salida_id']]);
                 }
 
                 // 3. Obtener un producto_id válido para evitar violaciones de clave foránea
                 $productoId = null;
                 if (!empty($cuenta['salida_id'])) {
-                    $stmtProd = $pdo->prepare("SELECT producto_id FROM detalle_salidas WHERE salida_id = ? LIMIT 1");
+                    $stmtProd =$pdo->prepare("SELECT producto_id FROM detalle_salidas WHERE salida_id = ? LIMIT 1");
                     $stmtProd->execute([$cuenta['salida_id']]);
-                    $prodFetch = $stmtProd->fetchColumn();
+                    $prodFetch =$stmtProd->fetchColumn();
                     if ($prodFetch) {
                         $productoId = intval($prodFetch);
                     }
                 }
 
-                // Fallback: Si no tiene detalle o la columna exige NOT NULL, asigna un producto válido de la BD
+                // Fallback 1: Buscar cualquier producto existente en la BD
                 if (!$productoId) {
-                    $productoId = $pdo->query("SELECT id FROM productos LIMIT 1")->fetchColumn();
-                    $productoId = $productoId ? intval($productoId) : null;
+                    $productoId =$pdo->query("SELECT id FROM productos ORDER BY id ASC LIMIT 1")->fetchColumn();
                 }
+
+                // Fallback 2: Si no existe ningún producto en la BD, se crea uno comodín para evitar el error de Foreign Key
+                if (!$productoId) {$pdo->exec("INSERT INTO productos (nombre, precio, stock) VALUES ('Abono Financiero / Servicio General', 0.00, 0)");
+                    $productoId =$pdo->lastInsertId();
+                }
+
+                $productoId = intval($productoId);
 
                 // 4. Registrar únicamente el flujo real ingresado (Abono o Cobro Total)
                 $concepto = "Cobro de crédito a {$cuenta['cliente']} (Venta #{$cuenta['salida_id']})";
-                $stmtIngreso = $pdo->prepare("INSERT INTO ingresos
+                $stmtIngreso =$pdo->prepare("INSERT INTO ingresos
                     (salida_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, fecha_ingreso)
                     VALUES (?, ?, 1, ?, ?, ?, 0.00, ?, ?, NOW())");
-                $stmtIngreso->execute([$cuenta['salida_id'], $productoId, $montoCobrado, $concepto, $montoCobrado, $montoCobrado, $metodoPago]);
+                $stmtIngreso->execute([$cuenta['salida_id'], $productoId,$montoCobrado, $concepto,$montoCobrado, $montoCobrado,$metodoPago]);
 
-                $pdo->commit();
-                $_SESSION['mensajeExito'] = "Cobro registrado correctamente ($" . number_format($montoCobrado, 2) . "). Saldo pendiente: $" . number_format($nuevoSaldo, 2);
+                $pdo->commit();$_SESSION['mensajeExito'] = "Cobro registrado correctamente ($" . number_format($montoCobrado, 2) . "). Saldo pendiente: $" . number_format($nuevoSaldo, 2);
 
             } else {
-                $pdo->rollBack();
-                $_SESSION['mensajeError'] = "La cuenta a cobrar ya fue procesada o no existe.";
+                $pdo->rollBack();$_SESSION['mensajeError'] = "La cuenta a cobrar ya fue procesada o no existe.";
             }
         } catch (\PDOException $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
+            if ($pdo->inTransaction()) {$pdo->rollBack();
             }
             $_SESSION['mensajeError'] = "Error al abonar la cuenta: " . $e->getMessage();
         }
@@ -125,25 +128,21 @@ try {
         ORDER BY fecha_emision DESC";
 
     $cuentas = $pdo->query($sqlUnificado)->fetchAll(PDO::FETCH_ASSOC);
-} catch (\PDOException $e) {
-    $mensajeError = "Error al consultar Cuentas por Cobrar: " . $e->getMessage();
+} catch (\PDOException $e) {$mensajeError = "Error al consultar Cuentas por Cobrar: " . $e->getMessage();
 }
 
 // --- CÁLCULO DE TOTALES ---
 $totalPendiente = 0;
-foreach ($cuentas as $c) {
+foreach ($cuentas as$c) {
     $totalPendiente += floatval($c['monto_pendiente']);
 }
 
 try {
-    $stmtTotCob = $pdo->query("SELECT SUM(monto_total) FROM ingresos WHERE salida_id IS NOT NULL AND concepto LIKE '%Cobro de crédito%'");
-    $totalCobrado = floatval($stmtTotCob->fetchColumn() ?? 0);
-    $clientesDeudores = count(array_unique(array_column($cuentas, 'cliente')));
-    $totalGeneralCredito = $totalPendiente + $totalCobrado;
-} catch (\PDOException $e) {
-    $totalCobrado = 0;
+    $stmtTotCob =$pdo->query("SELECT SUM(monto_total) FROM ingresos WHERE salida_id IS NOT NULL AND concepto LIKE '%Cobro de crédito%'");
+    $totalCobrado = floatval($stmtTotCob->fetchColumn() ?? 0);$clientesDeudores = count(array_unique(array_column($cuentas, 'cliente')));$totalGeneralCredito = $totalPendiente +$totalCobrado;
+} catch (\PDOException $e) {$totalCobrado = 0;
     $clientesDeudores = 0;
-    $totalGeneralCredito = $totalPendiente;
+    $totalGeneralCredito =$totalPendiente;
 }
 ?>
 
@@ -223,7 +222,7 @@ try {
                     <?php if (empty($cuentas)): ?>
                         <tr><td colspan="6" class="text-center py-3 text-muted">Sin cuentas pendientes por cobrar.</td></tr>
                     <?php else: ?>
-                        <?php foreach ($cuentas as $c): ?>
+                        <?php foreach ($cuentas as$c): ?>
                             <tr>
                                 <td><?= !empty($c['fecha_emision']) ? date('d/m/Y H:i', strtotime($c['fecha_emision'])) : 'N/A' ?></td>
                                 <td class="fw-bold"><?= htmlspecialchars($c['cliente']) ?></td>
