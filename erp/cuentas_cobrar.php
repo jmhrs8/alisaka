@@ -63,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['liquidar_cxc'])) {
                     $stmtSalidaUp->execute([$cuenta['salida_id']]);
                 }
 
-                // 3. Obtener el producto_id representativo para mantener trazabilidad
+                // 3. Obtener un producto_id válido para evitar violaciones de clave foránea
                 $productoId = null;
                 if (!empty($cuenta['salida_id'])) {
                     $stmtProd = $pdo->prepare("SELECT producto_id FROM detalle_salidas WHERE salida_id = ? LIMIT 1");
@@ -72,6 +72,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['liquidar_cxc'])) {
                     if ($prodFetch) {
                         $productoId = intval($prodFetch);
                     }
+                }
+
+                // Fallback: Si no tiene detalle o la columna exige NOT NULL, asigna un producto válido de la BD
+                if (!$productoId) {
+                    $productoId = $pdo->query("SELECT id FROM productos LIMIT 1")->fetchColumn();
+                    $productoId = $productoId ? intval($productoId) : null;
                 }
 
                 // 4. Registrar únicamente el flujo real ingresado (Abono o Cobro Total)
