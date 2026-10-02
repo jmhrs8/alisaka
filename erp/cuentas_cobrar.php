@@ -57,14 +57,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['liquidar_cxc'])) {
                     $stmtIns->execute([$cuenta['salida_id'], $cuenta['cliente'], $nuevoSaldo, $nuevoEstatus]);
                 }
 
-                // 2. Actualizar estatus en ventas cuando se líquida por completo
+                // 2. Actualizar estatus en ventas cuando se liquida por completo
                 if ($nuevoEstatus === 'cobrado' && !empty($cuenta['salida_id'])) {
                     $stmtSalidaUp = $pdo->prepare("UPDATE salidas SET tipo_pago = 'contado', estado_cobro = 'cobrado' WHERE id = ?");
                     $stmtSalidaUp->execute([$cuenta['salida_id']]);
                 }
 
                 // 3. Obtener el producto_id representativo para mantener trazabilidad
-                $productoId = 0;
+                $productoId = null;
                 if (!empty($cuenta['salida_id'])) {
                     $stmtProd = $pdo->prepare("SELECT producto_id FROM detalle_salidas WHERE salida_id = ? LIMIT 1");
                     $stmtProd->execute([$cuenta['salida_id']]);
@@ -76,8 +76,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['liquidar_cxc'])) {
 
                 // 4. Registrar únicamente el flujo real ingresado (Abono o Cobro Total)
                 $concepto = "Cobro de crédito a {$cuenta['cliente']} (Venta #{$cuenta['salida_id']})";
-                $stmtIngreso = $pdo->prepare("INSERT INTO ingresos 
-                    (salida_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, fecha_ingreso) 
+                $stmtIngreso = $pdo->prepare("INSERT INTO ingresos
+                    (salida_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, fecha_ingreso)
                     VALUES (?, ?, 1, ?, ?, ?, 0.00, ?, ?, NOW())");
                 $stmtIngreso->execute([$cuenta['salida_id'], $productoId, $montoCobrado, $concepto, $montoCobrado, $montoCobrado, $metodoPago]);
 
@@ -106,7 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['liquidar_cxc'])) {
 // --- CONSULTA UNIFICADA DE SALDOS PENDIENTES ---
 $cuentas = [];
 try {
-    $sqlUnificado = "SELECT 
+    $sqlUnificado = "SELECT
             s.id AS salida_id,
             COALESCE(cxc.id, 0) AS cxc_id,
             COALESCE(s.fecha, s.fecha_salida, cxc.fecha_emision) AS fecha_emision,
@@ -123,7 +123,7 @@ try {
     $mensajeError = "Error al consultar Cuentas por Cobrar: " . $e->getMessage();
 }
 
-// --- CALCULO DE TOTALES ---
+// --- CÁLCULO DE TOTALES ---
 $totalPendiente = 0;
 foreach ($cuentas as $c) {
     $totalPendiente += floatval($c['monto_pendiente']);
