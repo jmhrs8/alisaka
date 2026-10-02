@@ -40,14 +40,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_producto']))
 // 2. EDITAR / MODIFICAR PRODUCTO
 // =========================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modificar_producto'])) {
-    $idEditar      = intval($_POST['producto_id'] ?? 0);
-    $codigo        = trim($_POST['codigo'] ?? '');
-    $nombre        = trim($_POST['nombre'] ?? '');
-    $tipoUnidad    = trim($_POST['tipo_unidad'] ?? 'pieza');
-    $precioVenta   = floatval($_POST['precio_venta'] ?? 0);
-    $costoUnitario = floatval($_POST['costo_unitario'] ?? 0);
-    $stockActual   = floatval($_POST['stock_actual'] ?? 0);
-    $stockMinimo   = floatval($_POST['stock_minimo'] ?? 5);
+    $idEditar           = intval($_POST['producto_id'] ?? 0);
+    $codigo             = trim($_POST['codigo'] ?? '');
+    $nombre             = trim($_POST['nombre'] ?? '');
+    $tipoUnidad         = trim($_POST['tipo_unidad'] ?? 'pieza');
+    $unidadesPorEmpaque = floatval($_POST['unidades_por_empaque'] ?? 1);
+    $precioVenta        = floatval($_POST['precio_venta'] ?? 0);
+    $costoUnitario      = floatval($_POST['costo_unitario'] ?? 0);
+    $stockActual        = floatval($_POST['stock_actual'] ?? 0);
+    $stockMinimo        = floatval($_POST['stock_minimo'] ?? 5);
+
+    if ($unidadesPorEmpaque <= 0) {
+        $unidadesPorEmpaque = 1;
+    }
 
     if ($idEditar > 0 && !empty($codigo) && !empty($nombre)) {
         try {
@@ -70,8 +75,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modificar_producto'])
                 }
             }
 
-            $stmtUp = $pdo->prepare("UPDATE productos SET codigo = ?, nombre = ?, tipo_unidad = ?, costo_unitario = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?, imagen = ? WHERE id = ?");
-            $stmtUp->execute([$codigo, $nombre, $tipoUnidad, $costoUnitario, $precioVenta, $stockActual, $stockMinimo, $fotoUrl, $idEditar]);
+            $stmtUp = $pdo->prepare("UPDATE productos SET codigo = ?, nombre = ?, tipo_unidad = ?, unidades_por_empaque = ?, costo_unitario = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?, imagen = ? WHERE id = ?");
+            $stmtUp->execute([$codigo, $nombre, $tipoUnidad, $unidadesPorEmpaque, $costoUnitario, $precioVenta, $stockActual, $stockMinimo, $fotoUrl, $idEditar]);
 
             $mensajeExito = "Producto '{$nombre}' actualizado correctamente.";
         } catch (\PDOException $e) {
@@ -86,22 +91,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modificar_producto'])
 // 3. REGISTRAR NUEVO PRODUCTO + PRIMERA ENTRADA (COMPRA CON FORMA DE PAGO)
 // =========================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_completo'])) {
-    $codigo        = trim($_POST['codigo'] ?? '');
-    $nombre        = trim($_POST['nombre'] ?? '');
-    $tipoUnidad    = trim($_POST['tipo_unidad'] ?? 'pieza');
-    $precioVenta   = floatval($_POST['precio_venta'] ?? 0);
-    $stockMinimo   = floatval($_POST['stock_minimo'] ?? 5);
-    $costoUnitario = floatval($_POST['costo_unitario'] ?? 0);
-    $stockInicial  = floatval($_POST['stock_inicial'] ?? 0);
+    $codigo             = trim($_POST['codigo'] ?? '');
+    $nombre             = trim($_POST['nombre'] ?? '');
+    $tipoUnidad         = trim($_POST['tipo_unidad'] ?? 'pieza');
+    $unidadesPorEmpaque = floatval($_POST['unidades_por_empaque'] ?? 1);
+    $precioVenta        = floatval($_POST['precio_venta'] ?? 0);
+    $stockMinimo        = floatval($_POST['stock_minimo'] ?? 5);
+    $costoUnitario      = floatval($_POST['costo_unitario'] ?? 0); // Costo por empaque/unidad comprada
+    $cantidadEmpaques   = floatval($_POST['stock_inicial'] ?? 0);  // Cantidad de cajas/tambos/unidades compradas
 
-    $proveedorId     = !empty($_POST['proveedor_id']) ? intval($_POST['proveedor_id']) : null;
+    if ($unidadesPorEmpaque <= 0) {
+        $unidadesPorEmpaque = 1;
+    }
+
+    // El stock real en inventario se guarda en UNIDADES INDIVIDUALES (Litros, Piezas, etc.)
+    $stockInicialBase = $cantidadEmpaques * $unidadesPorEmpaque;
+
+    $proveedorId      = !empty($_POST['proveedor_id']) ? intval($_POST['proveedor_id']) : null;
     $estatusPago      = $_POST['estatus_pago'] ?? 'pagado';
-    $metodoPago      = $_POST['metodo_pago'] ?? 'efectivo';
-    $fechaVencimiento= !empty($_POST['fecha_vencimiento']) ? $_POST['fecha_vencimiento'] : null;
-    $tipoComprobante = $_POST['tipo_comprobante'] ?? 'sin_comprobante';
+    $metodoPago       = $_POST['metodo_pago'] ?? 'efectivo';
+    $fechaVencimiento = !empty($_POST['fecha_vencimiento']) ? $_POST['fecha_vencimiento'] : null;
+    $tipoComprobante  = $_POST['tipo_comprobante'] ?? 'sin_comprobante';
 
     // CÁLCULO DE MONTO TOTAL CON IVA SI ES FACTURA
-    $subtotal = $stockInicial * $costoUnitario;
+    $subtotal = $cantidadEmpaques * $costoUnitario;
     $montoIva = ($tipoComprobante === 'factura') ? ($subtotal * 0.16) : 0.00;
     $montoTotal = $subtotal + $montoIva;
 
@@ -136,25 +149,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
                 }
             }
 
-            // 1. Insertar Producto
-            $stmtProd = $pdo->prepare("INSERT INTO productos (codigo, nombre, tipo_unidad, costo_unitario, precio_venta, stock_actual, stock_minimo, imagen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmtProd->execute([$codigo, $nombre, $tipoUnidad, $costoUnitario, $precioVenta, $stockInicial, $stockMinimo, $fotoUrl]);
+            // 1. Insertar Producto (Guardando stock base total en piezas/litros)
+            $stmtProd = $pdo->prepare("INSERT INTO productos (codigo, nombre, tipo_unidad, unidades_por_empaque, costo_unitario, precio_venta, stock_actual, stock_minimo, imagen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmtProd->execute([$codigo, $nombre, $tipoUnidad, $unidadesPorEmpaque, $costoUnitario, $precioVenta, $stockInicialBase, $stockMinimo, $fotoUrl]);
             $productoId = $pdo->lastInsertId();
 
             // 2. Insertar Entrada y Cuentas/Egresos
-            if ($stockInicial > 0) {
+            if ($cantidadEmpaques > 0) {
                 $fechaPago = ($estatusPago === 'pagado') ? date('Y-m-d H:i:s') : null;
 
-                $stmtEnt = $pdo->prepare("INSERT INTO entradas_inventario (producto_id, proveedor_id, cantidad, costo_unitario, monto_total, estatus_pago, tipo_comprobante, comprobante_url, fecha_pago) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmtEnt->execute([$productoId, $proveedorId, $stockInicial, $costoUnitario, $montoTotal, $estatusPago, $tipoComprobante, $comprobanteUrl, $fechaPago]);
+                $stmtEnt = $pdo->prepare("INSERT INTO entradas_inventario (producto_id, proveedor_id, cantidad, empaques_recibidos, unidades_por_empaque, costo_unitario, monto_total, estatus_pago, tipo_comprobante, comprobante_url, fecha_pago) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmtEnt->execute([$productoId, $proveedorId, $stockInicialBase, $cantidadEmpaques, $unidadesPorEmpaque, $costoUnitario, $montoTotal, $estatusPago, $tipoComprobante, $comprobanteUrl, $fechaPago]);
                 $entradaId = $pdo->lastInsertId();
 
                 if ($estatusPago === 'pagado') {
-                    $concepto = "Compra inicial: {$stockInicial} unid. de {$nombre}";
+                    $concepto = "Compra inicial: {$cantidadEmpaques} {$tipoUnidad}(s) [Total: {$stockInicialBase} unids.] de {$nombre}";
                     $stmtEgr = $pdo->prepare("INSERT INTO egresos (entrada_id, proveedor_id, concepto, monto, metodo_pago, tipo_comprobante, comprobante_url, fecha_pago) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
                     $stmtEgr->execute([$entradaId, $proveedorId, $concepto, $montoTotal, $metodoPago, $tipoComprobante, $comprobanteUrl]);
                 } else {
-                    $concepto = "Compra a crédito (inicial): {$stockInicial} unid. de {$nombre}";
+                    $concepto = "Compra a crédito (inicial): {$cantidadEmpaques} {$tipoUnidad}(s) [Total: {$stockInicialBase} unids.] de {$nombre}";
                     $stmtCxP = $pdo->prepare("INSERT INTO cuentas_pagar (entrada_id, proveedor_id, concepto, monto, estatus, comprobante_url, fecha_vencimiento) VALUES (?, ?, ?, ?, 'pendiente', ?, ?)");
                     $stmtCxP->execute([$entradaId, $proveedorId, $concepto, $montoTotal, $comprobanteUrl, $fechaVencimiento]);
                 }
@@ -185,6 +198,9 @@ try {
     $productos = [];
 }
 ?>
+
+<!-- Librería JsBarcode para renderizar códigos de barras -->
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-box-seam text-primary me-2"></i> Inventario e Insumos</h2>
@@ -218,32 +234,64 @@ try {
                 <thead class="table-dark">
                     <tr>
                         <th>Foto</th>
-                        <th>Código</th>
+                        <th>Código / Barras</th>
                         <th>Nombre / Descripción</th>
-                        <th>Unidad</th>
+                        <th>Presentación</th>
+                        <th>Contenido por Empaque</th>
                         <th class="text-end">Costo U.</th>
                         <th class="text-end">P. Venta</th>
-                        <th class="text-center">Stock Actual</th>
+                        <th class="text-center">Stock Base Total</th>
                         <th class="text-center">Estado</th>
                         <th class="text-center">Acciones</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($productos)): ?>
-                        <tr><td colspan="9" class="text-center py-3 text-muted">No hay productos registrados en el inventario.</td></tr>
+                        <tr><td colspan="10" class="text-center py-3 text-muted">No hay productos registrados en el inventario.</td></tr>
                     <?php else: ?>
                         <?php foreach ($productos as $p): ?>
+                            <?php
+                                $factor = floatval($p['unidades_por_empaque'] ?? 1);
+                                if ($factor <= 0) $factor = 1;
+                                $empaquesEquivalentes = $p['stock_actual'] / $factor;
+                                $codigoSanitizado = htmlspecialchars($p['codigo']);
+                                $nombreSanitizado = htmlspecialchars($p['nombre']);
+                            ?>
                             <tr>
                                 <td>
                                     <img src="<?= htmlspecialchars($p['imagen']) ?>" alt="Foto" style="width: 40px; height: 40px; object-fit: cover;" class="rounded border">
                                 </td>
-                                <td class="fw-bold"><?= htmlspecialchars($p['codigo']) ?></td>
-                                <td><?= htmlspecialchars($p['nombre']) ?></td>
-                                <td><?= htmlspecialchars($p['tipo_unidad']) ?></td>
+                                <td>
+                                    <div class="fw-bold"><?= $codigoSanitizado ?></div>
+                                    <!-- Canvas para código de barras -->
+                                    <canvas id="barcode_<?= $p['id'] ?>" style="max-height: 30px; max-width: 120px;"></canvas>
+                                    <div class="mt-1">
+                                        <button class="btn btn-sm btn-outline-dark py-0 px-1" style="font-size:0.7rem;" onclick="descargarCodigoBarras('<?= $p['id'] ?>', '<?= $codigoSanitizado ?>')" title="Descargar Código de Barras">
+                                            <i class="bi bi-download"></i> Barras
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-primary py-0 px-1" style="font-size:0.7rem;" onclick="verModalQR('<?= $codigoSanitizado ?>', '<?= $nombreSanitizado ?>')" title="Ver Código QR">
+                                            <i class="bi bi-qr-code"></i> QR
+                                        </button>
+                                    </div>
+                                    <script>
+                                        JsBarcode("#barcode_<?= $p['id'] ?>", "<?= $codigoSanitizado ?>", {
+                                            format: "CODE128",
+                                            displayValue: false,
+                                            height: 30,
+                                            margin: 0
+                                        });
+                                    </script>
+                                </td>
+                                <td><?= $nombreSanitizado ?></td>
+                                <td><span class="badge bg-secondary"><?= htmlspecialchars($p['tipo_unidad']) ?></span></td>
+                                <td><?= number_format($factor, 2) ?> unids/litros</td>
                                 <td class="text-end">$<?= number_format($p['costo_unitario'], 2) ?></td>
                                 <td class="text-end">$<?= number_format($p['precio_venta'], 2) ?></td>
                                 <td class="text-center fw-bold fs-6">
                                     <?= number_format($p['stock_actual'], 2) ?>
+                                    <small class="d-block text-muted text-nowrap" style="font-size:0.75rem;">
+                                        (~<?= number_format($empaquesEquivalentes, 1) ?> <?= htmlspecialchars($p['tipo_unidad']) ?>s)
+                                    </small>
                                 </td>
                                 <td class="text-center">
                                     <?php if ($p['stock_actual'] <= $p['stock_minimo']): ?>
@@ -275,6 +323,25 @@ try {
     </div>
 </div>
 
+<!-- MODAL: VISUALIZAR CÓDIGO QR -->
+<div class="modal fade" id="modalQR" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content text-center">
+            <div class="modal-header bg-dark text-white">
+                <h6 class="modal-title fw-bold" id="qrModalTitle">Código QR</h6>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <img id="qrImage" src="" alt="Código QR" class="img-fluid border p-2 mb-2">
+                <p id="qrCodeText" class="fw-bold mb-1 text-primary"></p>
+                <a id="btnDownloadQR" href="" download="" class="btn btn-sm btn-success w-100 fw-bold">
+                    <i class="bi bi-download me-1"></i> Descargar QR
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- MODAL: EDITAR PRODUCTO -->
 <div class="modal fade" id="modalEditarProducto" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
@@ -299,18 +366,25 @@ try {
                             <input type="text" name="nombre" id="edit_nombre" class="form-control" required>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-bold">Tipo Unidad:</label>
+                            <label class="form-label fw-bold">Presentación:</label>
                             <select name="tipo_unidad" id="edit_tipo_unidad" class="form-select">
                                 <option value="Pieza">Pieza / Unidad</option>
                                 <option value="Caja">Caja</option>
                                 <option value="Paquete">Paquete</option>
+                                <option value="Millar">Millar (1,000 unids)</option>
+                                <option value="Tambo">Tambo / Contenedor</option>
+                                <option value="Galon">Galón</option>
                                 <option value="Kilo">Kilo</option>
                                 <option value="Litro">Litro</option>
                             </select>
                         </div>
 
                         <div class="col-md-3">
-                            <label class="form-label fw-bold">Costo Unitario ($):</label>
+                            <label class="form-label fw-bold">Unidades / Litros por Empaque:</label>
+                            <input type="number" step="0.01" min="0.01" name="unidades_por_empaque" id="edit_unidades_por_empaque" class="form-control" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-bold">Costo por Empaque ($):</label>
                             <input type="number" step="0.01" name="costo_unitario" id="edit_costo_unitario" class="form-control" required>
                         </div>
                         <div class="col-md-3">
@@ -318,15 +392,15 @@ try {
                             <input type="number" step="0.01" name="precio_venta" id="edit_precio_venta" class="form-control" required>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-bold">Stock Actual:</label>
+                            <label class="form-label fw-bold">Stock Actual (Base Total):</label>
                             <input type="number" step="0.01" name="stock_actual" id="edit_stock_actual" class="form-control" required>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-bold">Stock Mínimo:</label>
+                            <label class="form-label fw-bold">Stock Mínimo (Base):</label>
                             <input type="number" step="0.01" name="stock_minimo" id="edit_stock_minimo" class="form-control" required>
                         </div>
 
-                        <div class="col-md-12">
+                        <div class="col-md-9">
                             <label class="form-label fw-bold">Cambiar Fotografía (Opcional):</label>
                             <input type="file" name="fotografia" class="form-control" accept="image/*">
                         </div>
@@ -369,24 +443,34 @@ try {
                             <input type="text" name="nombre" class="form-control" placeholder="Ej. Papel Bond Tamaño Carta" required>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-bold">Tipo Unidad:</label>
-                            <select name="tipo_unidad" class="form-select">
+                            <label class="form-label fw-bold">Presentación / Empaque:</label>
+                            <select name="tipo_unidad" id="tipo_unidad" class="form-select" onchange="actualizarUnidadesPorEmpaque()">
                                 <option value="Pieza">Pieza / Unidad</option>
                                 <option value="Caja">Caja</option>
                                 <option value="Paquete">Paquete</option>
+                                <option value="Millar">Millar (1,000 unids)</option>
+                                <option value="Tambo">Tambo / Contenedor</option>
+                                <option value="Galon">Galón</option>
                                 <option value="Kilo">Kilo</option>
                                 <option value="Litro">Litro</option>
                             </select>
                         </div>
+
                         <div class="col-md-4">
-                            <label class="form-label fw-bold">Precio Venta ($):</label>
+                            <label class="form-label fw-bold text-primary" id="lbl_unidades_por_empaque">Unidades por Empaque (*):</label>
+                            <input type="number" step="0.01" min="0.01" name="unidades_por_empaque" id="unidades_por_empaque" class="form-control border-primary" value="1" oninput="calcularTotalesCompra()" required>
+                            <small class="text-muted d-block" id="help_unidades">Ej: Si es 1 caja con 20 piezas, pon 20.</small>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Precio Venta Unitario ($):</label>
                             <input type="number" step="0.01" name="precio_venta" class="form-control" placeholder="0.00">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label fw-bold">Stock Mínimo (Alerta):</label>
+                            <label class="form-label fw-bold">Stock Mínimo (Alerta Base):</label>
                             <input type="number" step="0.01" name="stock_minimo" class="form-control" value="5">
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-12">
                             <label class="form-label fw-bold">Fotografía del Producto:</label>
                             <input type="file" name="fotografia" class="form-control" accept="image/*">
                         </div>
@@ -405,11 +489,11 @@ try {
                             </select>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-bold">Stock Inicial (Cantidad):</label>
+                            <label class="form-label fw-bold" id="lbl_stock_inicial">Cantidad Comprada:</label>
                             <input type="number" step="0.01" min="0" name="stock_inicial" id="stock_inicial" class="form-control" value="0" oninput="calcularTotalesCompra()" required>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label fw-bold">Costo Unitario ($):</label>
+                            <label class="form-label fw-bold" id="lbl_costo_unitario">Costo por Empaque ($):</label>
                             <input type="number" step="0.01" min="0" name="costo_unitario" id="costo_unitario" class="form-control" value="0.00" oninput="calcularTotalesCompra()" required>
                         </div>
 
@@ -447,7 +531,7 @@ try {
                         <!-- DESGLOSE DINÁMICO DE TOTALES -->
                         <div class="col-md-12">
                             <div class="p-3 bg-light rounded border">
-                                <div class="row text-center">
+                                <div class="row text-center mb-2">
                                     <div class="col-md-4">
                                         <small class="text-muted d-block fw-bold">SUBTOTAL</small>
                                         <span id="lbl_subtotal" class="fs-6 fw-bold text-dark">$0.00</span>
@@ -460,6 +544,10 @@ try {
                                         <small class="text-muted d-block fw-bold">TOTAL COMPRA</small>
                                         <span id="lbl_total" class="fs-5 fw-bold text-success">$0.00</span>
                                     </div>
+                                </div>
+                                <div class="alert alert-info py-1 px-3 mb-0 text-center" style="font-size:0.9rem;">
+                                    <i class="bi bi-calculator me-1"></i> <strong>Inventario resultantes:</strong>
+                                    <span id="lbl_unidades_totales" class="fw-bold text-primary">0</span> unidades / litros individuales a ingresar.
                                 </div>
                             </div>
                         </div>
@@ -486,7 +574,7 @@ try {
 function toggleCreditoCampos(val) {
     const divVenc = document.getElementById('divFechaVencimiento');
     const divMetodo = document.getElementById('divMetodoPago');
-    
+
     if (val === 'pendiente') {
         divVenc.style.display = 'block';
         divMetodo.style.display = 'none';
@@ -496,12 +584,43 @@ function toggleCreditoCampos(val) {
     }
 }
 
+function actualizarUnidadesPorEmpaque() {
+    const tipo = document.getElementById('tipo_unidad').value;
+    const inputEmpaque = document.getElementById('unidades_por_empaque');
+    const helpEmpaque = document.getElementById('help_unidades');
+    const lblEmpaque = document.getElementById('lbl_unidades_por_empaque');
+    const lblStockInit = document.getElementById('lbl_stock_inicial');
+    const lblCostoUnit = document.getElementById('lbl_costo_unitario');
+
+    if (tipo === 'Millar') {
+        inputEmpaque.value = 1000;
+        lblEmpaque.innerText = "Unidades por Millar:";
+        helpEmpaque.innerText = "Automatizado a 1,000 unidades por millar.";
+    } else if (tipo === 'Caja' || tipo === 'Paquete') {
+        lblEmpaque.innerText = `Piezas por ${tipo}:`;
+        helpEmpaque.innerText = `Indica cuántas piezas vienen dentro de cada ${tipo.toLowerCase()}.`;
+    } else if (tipo === 'Tambo' || tipo === 'Galon') {
+        lblEmpaque.innerText = `Litros por ${tipo}:`;
+        helpEmpaque.innerText = `Indica cuántos litros contiene cada ${tipo.toLowerCase()} (Ej: Galón = 3.785 o 4, Tambo = 200).`;
+    } else {
+        inputEmpaque.value = 1;
+        lblEmpaque.innerText = "Contenido Unitario:";
+        helpEmpaque.innerText = "Medida base individual (1 unidad/litro).";
+    }
+
+    lblStockInit.innerText = `Cantidad (${tipo}s):`;
+    lblCostoUnit.innerText = `Costo por ${tipo} ($):`;
+
+    calcularTotalesCompra();
+}
+
 function calcularTotalesCompra() {
-    const cant = parseFloat(document.getElementById('stock_inicial').value) || 0;
-    const costo = parseFloat(document.getElementById('costo_unitario').value) || 0;
+    const empaques = parseFloat(document.getElementById('stock_inicial').value) || 0;
+    const costoEmpaque = parseFloat(document.getElementById('costo_unitario').value) || 0;
+    const unidadesPorEmpaque = parseFloat(document.getElementById('unidades_por_empaque').value) || 1;
     const tipoComp = document.getElementById('tipo_comprobante').value;
 
-    const subtotal = cant * costo;
+    const subtotal = empaques * costoEmpaque;
     let iva = 0;
 
     if (tipoComp === 'factura') {
@@ -509,10 +628,12 @@ function calcularTotalesCompra() {
     }
 
     const total = subtotal + iva;
+    const unidadesTotales = empaques * unidadesPorEmpaque;
 
     document.getElementById('lbl_subtotal').innerText = '$' + subtotal.toFixed(2);
     document.getElementById('lbl_iva').innerText = '$' + iva.toFixed(2);
     document.getElementById('lbl_total').innerText = '$' + total.toFixed(2);
+    document.getElementById('lbl_unidades_totales').innerText = unidadesTotales.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
 function abrirModalEditar(prod) {
@@ -520,12 +641,37 @@ function abrirModalEditar(prod) {
     document.getElementById('edit_codigo').value = prod.codigo;
     document.getElementById('edit_nombre').value = prod.nombre;
     document.getElementById('edit_tipo_unidad').value = prod.tipo_unidad;
+    document.getElementById('edit_unidades_por_empaque').value = prod.unidades_por_empaque || 1;
     document.getElementById('edit_costo_unitario').value = prod.costo_unitario;
     document.getElementById('edit_precio_venta').value = prod.precio_venta;
     document.getElementById('edit_stock_actual').value = prod.stock_actual;
     document.getElementById('edit_stock_minimo').value = prod.stock_minimo;
 
     const modal = new bootstrap.Modal(document.getElementById('modalEditarProducto'));
+    modal.show();
+}
+
+// FUNCIONES PARA CÓDIGOS DE BARRAS Y QR
+function descargarCodigoBarras(id, codigo) {
+    const canvas = document.getElementById('barcode_' + id);
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = 'barcode_' + codigo + '.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+}
+
+function verModalQR(codigo, nombre) {
+    const urlQR = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(codigo);
+    document.getElementById('qrModalTitle').innerText = nombre;
+    document.getElementById('qrCodeText').innerText = 'Código: ' + codigo;
+    document.getElementById('qrImage').src = urlQR;
+
+    const btnDownload = document.getElementById('btnDownloadQR');
+    btnDownload.href = urlQR;
+    btnDownload.download = 'QR_' + codigo + '.png';
+
+    const modal = new bootstrap.Modal(document.getElementById('modalQR'));
     modal.show();
 }
 </script>
