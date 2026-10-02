@@ -2,6 +2,42 @@
 require_once 'includes/header.php';
 
 // =========================================================================
+// GUARDAR CONFIGURACIÓN DE ENVÍO AUTOMÁTICO DE REPORTES
+// =========================================================================
+$mensajeConfig = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_config_reporte'])) {
+    $activo = isset($_POST['activo_reporte']) ? 1 : 0;
+    $destinatarios = trim($_POST['destinatarios_reporte'] ?? '');
+    $frecuencia = $_POST['frecuencia_reporte'] ?? 'semanal';
+    $periodoRep = $_POST['periodo_reporte_auto'] ?? 'mes';
+
+    try {
+        $stmtConf = $pdo->prepare("UPDATE configuracion_reportes SET activo = :act, destinatarios = :dest, frecuencia = :frec, periodo_reporte = :per WHERE id = 1");
+        $stmtConf->execute([
+            ':act' => $activo,
+            ':dest' => $destinatarios,
+            ':frec' => $frecuencia,
+            ':per' => $periodoRep
+        ]);
+        $mensajeConfig = "<div class='alert alert-success alert-dismissible fade show my-3' role='alert'>
+            <i class='bi bi-check-circle me-1'></i> Configuración de reporte automático guardada correctamente.
+            <button type='button' class='btn-close' data-bs-dismiss='alert'></button>
+        </div>";
+    } catch (\PDOException $e) {
+        $mensajeConfig = "<div class='alert alert-danger my-3'>Error al guardar configuración: " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+}
+
+// Obtener configuración actual para el modal
+$configReporte = ['activo' => 0, 'destinatarios' => '', 'frecuencia' => 'semanal', 'periodo_reporte' => 'mes'];
+try {
+    $stmtGetConf = $pdo->query("SELECT * FROM configuracion_reportes WHERE id = 1");
+    if ($rowC = $stmtGetConf->fetch(PDO::FETCH_ASSOC)) {
+        $configReporte = $rowC;
+    }
+} catch (\PDOException $e) {}
+
+// =========================================================================
 // PARÁMETROS DE FILTRO (Periodo y Cliente)
 // =========================================================================
 $periodoSeleccionado = $_GET['periodo'] ?? 'mes'; // semana, quincena, mes, ano
@@ -34,7 +70,7 @@ switch ($periodoSeleccionado) {
 }
 
 // =========================================================================
-// CONSULTAS SQL Y DATOS
+// CONSULTAS SQL Y DATOS (Estructura Original Respetada)
 // =========================================================================
 
 // 1. Obtener lista de clientes únicos
@@ -43,13 +79,13 @@ try {
     $listaClientes = $pdo->query("SELECT DISTINCT cliente FROM salidas WHERE cliente IS NOT NULL AND cliente != '' ORDER BY cliente ASC")->fetchAll(PDO::FETCH_COLUMN);
 } catch (\PDOException $e) {}
 
-// 2. Construir cláusula WHERE corregida
-$whereSalidas = " WHERE COALESCE(fecha, fecha_salida) BETWEEN :f_inicio AND :f_fin ";
-$paramsSalidas = [':f_inicio' => $fechaInicio, ':f_fin' => $fechaFin];
+// 2. Construir cláusula WHERE base
+$whereSalidas = " WHERE COALESCE(s.fecha, s.fecha_salida) BETWEEN :f_inicio AND :f_fin ";
+$paramsBase = [':f_inicio' => $fechaInicio, ':f_fin' => $fechaFin];
 
 if ($clienteSeleccionado !== 'todos') {
-    $whereSalidas .= " AND cliente = :cliente ";
-    $paramsSalidas[':cliente'] = $clienteSeleccionado;
+    $whereSalidas .= " AND s.cliente = :cliente ";
+    $paramsBase[':cliente'] = $clienteSeleccionado;
 }
 
 // 3. Numerología por Cliente (Ventas, Cobrado, Pendiente)
@@ -77,7 +113,7 @@ try {
         ORDER BY total_ventas DESC";
 
     $stmtRC = $pdo->prepare($sqlResumenClientes);
-    $stmtRC->execute($paramsSalidas);
+    $stmtRC->execute($paramsBase);
     $resumenClientes = $stmtRC->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($resumenClientes as $rc) {
@@ -98,7 +134,7 @@ try {
                   $whereSalidas
                   ORDER BY s.id DESC";
     $stmtVentas = $pdo->prepare($sqlVentas);
-    $stmtVentas->execute($paramsSalidas);
+    $stmtVentas->execute($paramsBase);
     $ventasDetalle = $stmtVentas->fetchAll(PDO::FETCH_ASSOC);
 } catch (\PDOException $e) {}
 
@@ -136,7 +172,64 @@ try {
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2><i class="bi bi-bar-chart-line-fill text-primary me-2"></i> Informe Ejecutivo y Reporte Financiero</h2>
-    <button onclick="window.print();" class="btn btn-secondary btn-print"><i class="bi bi-printer"></i> Imprimir Reporte / PDF</button>
+    <div>
+        <button type="button" class="btn btn-outline-dark btn-print me-2" data-bs-toggle="modal" data-bs-target="#modalConfigReportes">
+            <i class="bi bi-gear-fill me-1"></i> Programar Envío
+        </button>
+        <button onclick="window.print();" class="btn btn-secondary btn-print"><i class="bi bi-printer"></i> Imprimir Reporte / PDF</button>
+    </div>
+</div>
+
+<?= $mensajeConfig ?>
+
+<!-- MODAL CONFIGURACIÓN REPORTES AUTOMÁTICOS -->
+<div class="modal fade" id="modalConfigReportes" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="reportes.php">
+                <input type="hidden" name="action_config_reporte" value="1">
+                <div class="modal-header bg-dark text-white">
+                    <h5 class="modal-title"><i class="bi bi-envelope-paper me-2"></i> Envíos Automáticos por Correo</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" name="activo_reporte" id="activo_reporte" value="1" <?= $configReporte['activo'] ? 'checked' : '' ?>>
+                        <label class="form-check-label fw-bold" for="activo_reporte">Activar envío automático de reportes</label>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Destinatarios (separados por coma):</label>
+                        <input type="text" name="destinatarios_reporte" class="form-control" placeholder="ejemplo1@empresa.com, ejemplo2@empresa.com" value="<?= htmlspecialchars($configReporte['destinatarios']) ?>" required>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Frecuencia de envío:</label>
+                            <select name="frecuencia_reporte" class="form-select">
+                                <option value="diario" <?= $configReporte['frecuencia'] === 'diario' ? 'selected' : '' ?>>Diario</option>
+                                <option value="semanal" <?= $configReporte['frecuencia'] === 'semanal' ? 'selected' : '' ?>>Semanal</option>
+                                <option value="mensual" <?= $configReporte['frecuencia'] === 'mensual' ? 'selected' : '' ?>>Mensual</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Periodo a incluir:</label>
+                            <select name="periodo_reporte_auto" class="form-select">
+                                <option value="semana" <?= $configReporte['periodo_reporte'] === 'semana' ? 'selected' : '' ?>>Semana Actual</option>
+                                <option value="quincena" <?= $configReporte['periodo_reporte'] === 'quincena' ? 'selected' : '' ?>>Quincena Actual</option>
+                                <option value="mes" <?= $configReporte['periodo_reporte'] === 'mes' ? 'selected' : '' ?>>Mes Actual</option>
+                                <option value="ano" <?= $configReporte['periodo_reporte'] === 'ano' ? 'selected' : '' ?>>Año Actual</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i> Guardar Configuración</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 
 <!-- FILTROS DE BÚSQUEDA -->
