@@ -29,15 +29,15 @@ function enviarAlertaStockBajo($codigo, $nombre, $stockActual, $stockMinimo, $ti
         $mail->SMTPAuth   = true;
         
         // --- CONFIGURA TUS CREDENCIALES AQUÍ ---
-        $mail->Username   = 'tu_correo@gmail.com'; 
+        $mail->Username   = 'jmhrs8@gmail.com'; 
         $mail->Password   = 'czyydevgpokxkljm'; // Contraseña de aplicación
         
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port       = 587;
 
         // Destinatarios y asunto
-        $mail->setFrom('tu_correo@gmail.com', 'Sistema ERP - Alerta de Stock');
-        $mail->addAddress('admin@tuempresa.com'); // Correo que recibe la notificación
+        $mail->setFrom('jmhrs8@gmail.com', 'Sistema ERP - Alerta de Stock bajo favor de resurtir de forma urgente');
+        $mail->addAddress('jmhrs8@gmail.com'); // Correo que recibe la notificación
 
         $mail->isHTML(true);
         $mail->CharSet = 'UTF-8';
