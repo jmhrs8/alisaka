@@ -4,6 +4,42 @@ require_once 'includes/header.php';
 $mensajeExito = '';
 $mensajeError = '';
 
+// Directoria de carga para archivos RFC
+$directorioUpload = 'uploads/rfc/';
+if (!is_dir($directorioUpload)) {
+    mkdir($directorioUpload, 0755, true);
+}
+
+// Función auxiliar para procesar la subida del archivo RFC
+function procesarSubidaRFC($fileInput, $directorioUpload, $archivoAntiguo = null) {
+    if (isset($_FILES[$fileInput]) && $_FILES[$fileInput]['error'] === UPLOAD_ERR_OK) {
+        $fileTmpPath   = $_FILES[$fileInput]['tmp_name'];
+        $fileName      = $_FILES[$fileInput]['name'];
+        $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+
+        $extensionesPermitidas = ['pdf', 'jpg', 'jpeg', 'png'];
+
+        if (in_array($fileExtension, $extensionesPermitidas)) {
+            // Nombre único para evitar colisiones
+            $nuevoNombreArchivo = 'RFC_' . uniqid() . '_' . time() . '.' . $fileExtension;
+            $destPath = $directorioUpload . $nuevoNombreArchivo;
+
+            if (move_uploaded_file($fileTmpPath, $destPath)) {
+                // Eliminar archivo antiguo si existe
+                if ($archivoAntiguo && file_exists($directorioUpload . $archivoAntiguo)) {
+                    @unlink($directorioUpload . $archivoAntiguo);
+                }
+                return $nuevoNombreArchivo;
+            } else {
+                throw new Exception("Error al mover el archivo de RFC al directorio de destino.");
+            }
+        } else {
+            throw new Exception("Formato de archivo de RFC no permitido. Solo se admiten PDF, JPG y PNG.");
+        }
+    }
+    return $archivoAntiguo; // Retorna el anterior si no se subió uno nuevo
+}
+
 // 1. REGISTRAR PROVEEDOR
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_proveedor'])) {
     $nombre        = trim($_POST['nombre'] ?? '');
@@ -17,11 +53,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_proveedor']))
 
     if (!empty($nombre)) {
         try {
-            $stmt = $pdo->prepare("INSERT INTO proveedores (nombre, rfc, contacto, telefono, email, direccion, banco, numero_cuenta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$nombre, $rfc, $contacto, $telefono, $email, $direccion, $banco, $numero_cuenta]);
+            $rfc_archivo = procesarSubidaRFC('rfc_archivo', $directorioUpload);
+
+            $stmt = $pdo->prepare("INSERT INTO proveedores (nombre, rfc, contacto, telefono, email, direccion, banco, numero_cuenta, rfc_archivo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$nombre, $rfc, $contacto, $telefono, $email, $direccion, $banco, $numero_cuenta, $rfc_archivo]);
             $mensajeExito = "Proveedor registrado correctamente.";
         } catch (\PDOException $e) {
             $mensajeError = "Error al guardar el proveedor: " . $e->getMessage();
+        } catch (Exception $e) {
+            $mensajeError = $e->getMessage();
         }
     } else {
         $mensajeError = "El nombre del proveedor es obligatorio.";
@@ -39,14 +79,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editar_proveedor'])) 
     $direccion     = trim($_POST['direccion'] ?? '');
     $banco         = trim($_POST['banco'] ?? '');
     $numero_cuenta = trim($_POST['numero_cuenta'] ?? '');
+    $archivoActual = $_POST['rfc_archivo_actual'] ?? null;
 
     if ($id > 0 && !empty($nombre)) {
         try {
-            $stmt = $pdo->prepare("UPDATE proveedores SET nombre = ?, rfc = ?, contacto = ?, telefono = ?, email = ?, direccion = ?, banco = ?, numero_cuenta = ? WHERE id = ?");
-            $stmt->execute([$nombre, $rfc, $contacto, $telefono, $email, $direccion, $banco, $numero_cuenta, $id]);
+            $rfc_archivo = procesarSubidaRFC('rfc_archivo', $directorioUpload, $archivoActual);
+
+            $stmt = $pdo->prepare("UPDATE proveedores SET nombre = ?, rfc = ?, contacto = ?, telefono = ?, email = ?, direccion = ?, banco = ?, numero_cuenta = ?, rfc_archivo = ? WHERE id = ?");
+            $stmt->execute([$nombre, $rfc, $contacto, $telefono, $email, $direccion, $banco, $numero_cuenta, $rfc_archivo, $id]);
             $mensajeExito = "Proveedor actualizado correctamente.";
         } catch (\PDOException $e) {
             $mensajeError = "Error al actualizar el proveedor: " . $e->getMessage();
+        } catch (Exception $e) {
+            $mensajeError = $e->getMessage();
         }
     } else {
         $mensajeError = "Datos inválidos para actualizar el proveedor.";
@@ -68,8 +113,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_proveedor'])
                 throw new Exception("No se puede eliminar el proveedor porque tiene cuentas por pagar registradas.");
             }
 
+            // Obtener el archivo para borrarlo del servidor
+            $stmtFile = $pdo->prepare("SELECT rfc_archivo FROM proveedores WHERE id = ?");
+            $stmtFile->execute([$id]);
+            $archivoRfc = $stmtFile->fetchColumn();
+
             $stmtDel = $pdo->prepare("DELETE FROM proveedores WHERE id = ?");
             $stmtDel->execute([$id]);
+
+            if ($archivoRfc && file_exists($directorioUpload . $archivoRfc)) {
+                @unlink($directorioUpload . $archivoRfc);
+            }
+
             $mensajeExito = "Proveedor eliminado correctamente.";
         } catch (Exception $e) {
             $mensajeError = "Error al eliminar proveedor: " . $e->getMessage();
@@ -112,7 +167,7 @@ try {
         <i class="bi bi-plus-circle me-1"></i> Registrar Nuevo Proveedor
     </div>
     <div class="card-body">
-        <form method="POST" action="proveedores.php">
+        <form method="POST" action="proveedores.php" enctype="multipart/form-data">
             <input type="hidden" name="guardar_proveedor" value="1">
             <div class="row g-3">
                 <div class="col-md-4">
@@ -147,7 +202,11 @@ try {
                     <label class="form-label fw-bold">N° Cuenta / CLABE:</label>
                     <input type="text" name="numero_cuenta" class="form-control" placeholder="0123456789...">
                 </div>
-                <div class="col-md-12 text-end">
+                <div class="col-md-4">
+                    <label class="form-label fw-bold">Documento RFC (PDF / Imagen):</label>
+                    <input type="file" name="rfc_archivo" class="form-control" accept=".pdf,.jpg,.jpeg,.png">
+                </div>
+                <div class="col-md-8 text-end align-self-end">
                     <button type="submit" class="btn btn-primary fw-bold">
                         <i class="bi bi-save me-1"></i> Guardar Proveedor
                     </button>
@@ -170,6 +229,7 @@ try {
                         <th>ID</th>
                         <th>Nombre / Razón Social</th>
                         <th>RFC</th>
+                        <th>RFC Doc</th>
                         <th>Contacto</th>
                         <th>Teléfono</th>
                         <th>Correo</th>
@@ -181,13 +241,22 @@ try {
                 </thead>
                 <tbody>
                     <?php if (empty($proveedores)): ?>
-                        <tr><td colspan="10" class="text-center py-3 text-muted">No hay proveedores registrados aún.</td></tr>
+                        <tr><td colspan="11" class="text-center py-3 text-muted">No hay proveedores registrados aún.</td></tr>
                     <?php else: ?>
                         <?php foreach ($proveedores as $prov): ?>
                             <tr>
                                 <td><?= $prov['id'] ?></td>
                                 <td class="fw-bold"><?= htmlspecialchars($prov['nombre']) ?></td>
                                 <td><?= htmlspecialchars($prov['rfc'] ?? 'N/A') ?></td>
+                                <td class="text-center">
+                                    <?php if (!empty($prov['rfc_archivo'])): ?>
+                                        <a href="<?= $directorioUpload . htmlspecialchars($prov['rfc_archivo']) ?>" target="_blank" class="btn btn-sm btn-outline-info" title="Ver RFC">
+                                            <i class="bi bi-file-earmark-pdf-fill"></i> Ver
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="text-muted small">Sin archivo</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td><?= htmlspecialchars($prov['contacto'] ?? 'N/A') ?></td>
                                 <td><?= htmlspecialchars($prov['telefono'] ?? 'N/A') ?></td>
                                 <td><?= htmlspecialchars($prov['email'] ?? 'N/A') ?></td>
@@ -209,9 +278,10 @@ try {
                                     <div class="modal fade" id="modalEditarProv<?= $prov['id'] ?>" tabindex="-1">
                                         <div class="modal-dialog">
                                             <div class="modal-content text-start">
-                                                <form method="POST" action="proveedores.php">
+                                                <form method="POST" action="proveedores.php" enctype="multipart/form-data">
                                                     <input type="hidden" name="editar_proveedor" value="1">
                                                     <input type="hidden" name="proveedor_id" value="<?= $prov['id'] ?>">
+                                                    <input type="hidden" name="rfc_archivo_actual" value="<?= htmlspecialchars($prov['rfc_archivo'] ?? '') ?>">
                                                     <div class="modal-header bg-warning text-dark">
                                                         <h5 class="modal-title"><i class="bi bi-pencil-square me-2"></i> Editar Proveedor</h5>
                                                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -224,6 +294,15 @@ try {
                                                         <div class="mb-3">
                                                             <label class="form-label fw-bold">RFC:</label>
                                                             <input type="text" name="rfc" class="form-control" value="<?= htmlspecialchars($prov['rfc'] ?? '') ?>">
+                                                        </div>
+                                                        <div class="mb-3">
+                                                            <label class="form-label fw-bold">Documento RFC (PDF / Imagen):</label>
+                                                            <input type="file" name="rfc_archivo" class="form-control" accept=".pdf,.jpg,.jpeg,.png">
+                                                            <?php if (!empty($prov['rfc_archivo'])): ?>
+                                                                <small class="text-muted d-block mt-1">
+                                                                    Archivo actual: <a href="<?= $directorioUpload . htmlspecialchars($prov['rfc_archivo']) ?>" target="_blank">Ver documento actual</a>
+                                                                </small>
+                                                            <?php endif; ?>
                                                         </div>
                                                         <div class="mb-3">
                                                             <label class="form-label fw-bold">Contacto:</label>
