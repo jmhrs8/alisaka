@@ -2,12 +2,48 @@
 require_once 'includes/header.php';
 
 // =========================================================================
+// GUARDAR CONFIGURACIÓN DE ENVÍO AUTOMÁTICO DE REPORTES
+// =========================================================================
+$mensajeConfig = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_config_reporte'])) {
+    $activo = isset($_POST['activo_reporte']) ? 1 : 0;
+    $destinatarios = trim($_POST['destinatarios_reporte'] ?? '');
+    $frecuencia = $_POST['frecuencia_reporte'] ?? 'semanal';
+    $periodoRep = $_POST['periodo_reporte_auto'] ?? 'mes';
+
+    try {
+        $stmtConf = $pdo->prepare("UPDATE configuracion_reportes SET activo = :act, destinatarios = :dest, frecuencia = :frec, periodo_reporte = :per WHERE id = 1");
+        $stmtConf->execute([
+            ':act' => $activo,
+            ':dest' => $destinatarios,
+            ':frec' => $frecuencia,
+            ':per' => $periodoRep
+        ]);
+        $mensajeConfig = "<div class='alert alert-success alert-dismissible fade show my-3' role='alert'>
+            <i class='bi bi-check-circle me-1'></i> Configuración de reporte automático guardada correctamente.
+            <button type='button' class='btn-close' data-bs-dismiss='alert'></button>
+        </div>";
+    } catch (\PDOException $e) {
+        $mensajeConfig = "<div class='alert alert-danger my-3'>Error al guardar configuración: " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+}
+
+// Obtener configuración actual para el modal
+$configReporte = ['activo' => 0, 'destinatarios' => '', 'frecuencia' => 'semanal', 'periodo_reporte' => 'mes'];
+try {
+    $stmtGetConf = $pdo->query("SELECT * FROM configuracion_reportes WHERE id = 1");
+    if ($rowC = $stmtGetConf->fetch(PDO::FETCH_ASSOC)) {
+        $configReporte = $rowC;
+    }
+} catch (\PDOException $e) {}
+
+// =========================================================================
 // PARÁMETROS DE FILTRO (Periodo y Cliente)
 // =========================================================================
-$periodoSeleccionado = $_GET['periodo'] ?? 'mes'; // semana, quincena, mes, ano
+$periodoSeleccionado = $_GET['periodo'] ?? 'mes';
 $clienteSeleccionado = $_GET['cliente'] ?? 'todos';
 
-$fechaInicio = '';
+$fechaInicio = date('Y-m-01 00:00:00');
 $fechaFin    = date('Y-m-d 23:59:59');
 
 switch ($periodoSeleccionado) {
@@ -34,86 +70,106 @@ switch ($periodoSeleccionado) {
 }
 
 // =========================================================================
-// CONSULTAS SQL Y DATOS
+// CONSULTAS SQL CORREGIDAS
 // =========================================================================
 
 // 1. Obtener lista de clientes únicos
 $listaClientes = [];
 try {
-    $listaClientes = $pdo->query("SELECT DISTINCT cliente FROM salidas WHERE cliente IS NOT NULL AND cliente != '' ORDER BY cliente ASC")->fetchAll(PDO::FETCH_COLUMN);
+    $listaClientes = $pdo->query("SELECT DISTINCT cliente FROM salidas WHERE cliente IS NOT NULL AND TRIM(cliente) != '' ORDER BY cliente ASC")->fetchAll(PDO::FETCH_COLUMN);
 } catch (\PDOException $e) {}
 
-// 2. Construir cláusula WHERE corregida
-$whereSalidas = " WHERE COALESCE(fecha, fecha_salida) BETWEEN :f_inicio AND :f_fin ";
-$paramsSalidas = [':f_inicio' => $fechaInicio, ':f_fin' => $fechaFin];
+// 2. Construcción de filtro SQL
+$whereSalidas = " WHERE 1=1 ";
+$paramsSalidas = [];
+
+if ($periodoSeleccionado !== 'todos') {
+    $whereSalidas .= " AND (s.fecha BETWEEN :f_inicio AND :f_fin OR s.fecha_salida BETWEEN :f_inicio AND :f_fin) ";
+    $paramsSalidas[':f_inicio'] = $fechaInicio;
+    $paramsSalidas[':f_fin']    = $fechaFin;
+}
 
 if ($clienteSeleccionado !== 'todos') {
-    $whereSalidas .= " AND cliente = :cliente ";
+    $whereSalidas .= " AND s.cliente = :cliente ";
     $paramsSalidas[':cliente'] = $clienteSeleccionado;
 }
 
-// 3. Numerología por Cliente (Ventas, Cobrado, Pendiente)
-$resumenClientes = [];
+// 3. Obtener detalle de ventas con cálculo real de saldo
+$ventasDetalle = [];
+$resumenClientesDict = [];
+
 $montoTotalVentas    = 0;
 $montoTotalCobrado   = 0;
 $montoTotalPendiente = 0;
 
 try {
-    $sqlResumenClientes = "SELECT 
-            s.cliente,
-            SUM(COALESCE(s.monto_total, s.total, 0)) AS total_ventas,
-            SUM(CASE 
-                WHEN s.tipo_pago = 'contado' OR s.estado_cobro = 'cobrado' THEN COALESCE(s.monto_total, s.total, 0)
-                ELSE COALESCE(s.monto_total, s.total, 0) - COALESCE(cxc.monto, 0)
-            END) AS total_pagado,
-            SUM(CASE 
-                WHEN s.tipo_pago != 'contado' AND (s.estado_cobro IS NULL OR s.estado_cobro != 'cobrado') THEN COALESCE(cxc.monto, COALESCE(s.monto_total, s.total, 0))
-                ELSE 0 
-            END) AS total_pendiente
-        FROM salidas s
-        LEFT JOIN cuentas_cobrar cxc ON s.id = cxc.salida_id
-        $whereSalidas
-        GROUP BY s.cliente 
-        ORDER BY total_ventas DESC";
-
-    $stmtRC = $pdo->prepare($sqlResumenClientes);
-    $stmtRC->execute($paramsSalidas);
-    $resumenClientes = $stmtRC->fetchAll(PDO::FETCH_ASSOC);
-
-    foreach ($resumenClientes as $rc) {
-        $montoTotalVentas    += floatval($rc['total_ventas']);
-        $montoTotalCobrado   += floatval($rc['total_pagado']);
-        $montoTotalPendiente += floatval($rc['total_pendiente']);
-    }
-} catch (\PDOException $e) {}
-
-// 4. Detalle de Ventas para la tabla individual
-$ventasDetalle = [];
-try {
-    $sqlVentas = "SELECT s.id, s.cliente, COALESCE(s.monto_total, s.total, 0) AS monto, 
-                         s.tipo_pago, s.estado_cobro, COALESCE(s.fecha, s.fecha_salida) AS fecha_registro,
-                         COALESCE(cxc.monto, 0) AS saldo_pendiente_cxc
+    $sqlVentas = "SELECT 
+                    s.id, 
+                    COALESCE(s.cliente, 'Cliente General') AS cliente, 
+                    COALESCE(s.monto_total, s.total, 0) AS monto,
+                    COALESCE(s.tipo_pago, 'contado') AS tipo_pago, 
+                    COALESCE(s.estado_cobro, 'pendiente') AS estado_cobro, 
+                    COALESCE(s.fecha, s.fecha_salida, CURRENT_TIMESTAMP) AS fecha_registro,
+                    (SELECT COALESCE(SUM(cxc.monto), 0) FROM cuentas_cobrar cxc WHERE cxc.salida_id = s.id) AS saldo_pendiente_cxc
                   FROM salidas s
-                  LEFT JOIN cuentas_cobrar cxc ON s.id = cxc.salida_id
-                  $whereSalidas 
+                  $whereSalidas
                   ORDER BY s.id DESC";
+
     $stmtVentas = $pdo->prepare($sqlVentas);
     $stmtVentas->execute($paramsSalidas);
     $ventasDetalle = $stmtVentas->fetchAll(PDO::FETCH_ASSOC);
-} catch (\PDOException $e) {}
 
-// 5. Numerología por Proveedor (Cuentas por Pagar)
+    // Procesar métricas en PHP para garantizar exactitud sin errores SQL
+    foreach ($ventasDetalle as $v) {
+        $montoVenta = floatval($v['monto']);
+        $cliente    = $v['cliente'];
+        $tipoPago   = strtolower($v['tipo_pago']);
+        $estado     = strtolower($v['estado_cobro']);
+        $saldoCxC   = floatval($v['saldo_pendiente_cxc']);
+
+        if ($tipoPago === 'contado' || $estado === 'cobrado' || $estado === 'pagado') {
+            $cobrado   = $montoVenta;
+            $pendiente = 0;
+        } else {
+            $pendiente = ($saldoCxC > 0) ? $saldoCxC : $montoVenta;
+            $cobrado   = max(0, $montoVenta - $pendiente);
+        }
+
+        $montoTotalVentas    += $montoVenta;
+        $montoTotalCobrado   += $cobrado;
+        $montoTotalPendiente += $pendiente;
+
+        if (!isset($resumenClientesDict[$cliente])) {
+            $resumenClientesDict[$cliente] = [
+                'cliente' => $cliente,
+                'total_ventas' => 0,
+                'total_pagado' => 0,
+                'total_pendiente' => 0
+            ];
+        }
+
+        $resumenClientesDict[$cliente]['total_ventas']    += $montoVenta;
+        $resumenClientesDict[$cliente]['total_pagado']    += $cobrado;
+        $resumenClientesDict[$cliente]['total_pendiente'] += $pendiente;
+    }
+} catch (\PDOException $e) {
+    echo "<div class='alert alert-danger'>Error en consulta de ventas: " . htmlspecialchars($e->getMessage()) . "</div>";
+}
+
+$resumenClientes = array_values($resumenClientesDict);
+
+// 4. Numerología por Proveedor (Cuentas por Pagar)
 $resumenProveedores = [];
 $montoTotalCxP = 0;
 try {
-    $sqlCxP = "SELECT 
+    $sqlCxP = "SELECT
             COALESCE(p.nombre, 'Proveedor General') AS proveedor,
-            SUM(cp.monto) AS monto_total,
-            SUM(CASE WHEN cp.estatus = 'pagado' THEN cp.monto ELSE 0 END) AS pagado,
-            SUM(CASE WHEN cp.estatus = 'pendiente' THEN cp.monto ELSE 0 END) AS pendiente
+            SUM(COALESCE(cp.monto, 0)) AS monto_total,
+            SUM(CASE WHEN LOWER(cp.estatus) IN ('pagado', 'cobrado') THEN COALESCE(cp.monto, 0) ELSE 0 END) AS pagado,
+            SUM(CASE WHEN LOWER(cp.estatus) NOT IN ('pagado', 'cobrado') OR cp.estatus IS NULL THEN COALESCE(cp.monto, 0) ELSE 0 END) AS pendiente
         FROM cuentas_pagar cp
         LEFT JOIN proveedores p ON cp.proveedor_id = p.id
-        GROUP BY p.nombre 
+        GROUP BY p.nombre
         ORDER BY monto_total DESC";
     $resumenProveedores = $pdo->query($sqlCxP)->fetchAll(PDO::FETCH_ASSOC);
 
@@ -136,7 +192,64 @@ try {
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2><i class="bi bi-bar-chart-line-fill text-primary me-2"></i> Informe Ejecutivo y Reporte Financiero</h2>
-    <button onclick="window.print();" class="btn btn-secondary btn-print"><i class="bi bi-printer"></i> Imprimir Reporte / PDF</button>
+    <div>
+        <button type="button" class="btn btn-outline-dark btn-print me-2" data-bs-toggle="modal" data-bs-target="#modalConfigReportes">
+            <i class="bi bi-gear-fill me-1"></i> Programar Envío
+        </button>
+        <button onclick="window.print();" class="btn btn-secondary btn-print"><i class="bi bi-printer"></i> Imprimir Reporte / PDF</button>
+    </div>
+</div>
+
+<?= $mensajeConfig ?>
+
+<!-- MODAL CONFIGURACIÓN REPORTES AUTOMÁTICOS -->
+<div class="modal fade" id="modalConfigReportes" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="reportes.php">
+                <input type="hidden" name="action_config_reporte" value="1">
+                <div class="modal-header bg-dark text-white">
+                    <h5 class="modal-title"><i class="bi bi-envelope-paper me-2"></i> Envíos Automáticos por Correo</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" name="activo_reporte" id="activo_reporte" value="1" <?= $configReporte['activo'] ? 'checked' : '' ?>>
+                        <label class="form-check-label fw-bold" for="activo_reporte">Activar envío automático de reportes</label>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Destinatarios (separados por coma):</label>
+                        <input type="text" name="destinatarios_reporte" class="form-control" placeholder="ejemplo1@empresa.com, ejemplo2@empresa.com" value="<?= htmlspecialchars($configReporte['destinatarios']) ?>" required>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Frecuencia de envío:</label>
+                            <select name="frecuencia_reporte" class="form-select">
+                                <option value="diario" <?= $configReporte['frecuencia'] === 'diario' ? 'selected' : '' ?>>Diario</option>
+                                <option value="semanal" <?= $configReporte['frecuencia'] === 'semanal' ? 'selected' : '' ?>>Semanal</option>
+                                <option value="mensual" <?= $configReporte['frecuencia'] === 'mensual' ? 'selected' : '' ?>>Mensual</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Periodo a incluir:</label>
+                            <select name="periodo_reporte_auto" class="form-select">
+                                <option value="semana" <?= $configReporte['periodo_reporte'] === 'semana' ? 'selected' : '' ?>>Semana Actual</option>
+                                <option value="quincena" <?= $configReporte['periodo_reporte'] === 'quincena' ? 'selected' : '' ?>>Quincena Actual</option>
+                                <option value="mes" <?= $configReporte['periodo_reporte'] === 'mes' ? 'selected' : '' ?>>Mes Actual</option>
+                                <option value="ano" <?= $configReporte['periodo_reporte'] === 'ano' ? 'selected' : '' ?>>Año Actual</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i> Guardar Configuración</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 
 <!-- FILTROS DE BÚSQUEDA -->
@@ -171,7 +284,7 @@ try {
     </div>
 </div>
 
-<!-- TARJETAS CON METRICAS GENERALES -->
+<!-- METRICAS GENERALES -->
 <div class="row mb-4">
     <div class="col-md-3">
         <div class="card border-primary text-center p-3 shadow-sm">
@@ -203,12 +316,12 @@ try {
     </div>
 </div>
 
-<!-- SECCIÓN DE GRÁFICAS -->
+<!-- GRÁFICAS -->
 <div class="row mb-4">
     <div class="col-md-5">
         <div class="card shadow-sm h-100">
             <div class="card-header bg-dark text-white fw-bold">
-                <i class="bi bi-pie-chart-fill me-1"></i> Balance de Cobro (Cobrado vs. Pendiente)
+                <i class="bi bi-pie-chart-fill me-1"></i> Balance de Cobro
             </div>
             <div class="card-body d-flex align-items-center justify-content-center">
                 <canvas id="chartEstadoPago" style="max-height: 280px;"></canvas>
@@ -228,7 +341,7 @@ try {
     </div>
 </div>
 
-<!-- NUMEROLOGÍA POR CLIENTE -->
+<!-- TABLA POR CLIENTE -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-dark text-white fw-bold">
         <i class="bi bi-people-fill me-1"></i> Resumen Financiero por Cliente
@@ -263,7 +376,7 @@ try {
     </div>
 </div>
 
-<!-- DESGLOSE DETALLADO DE VENTAS -->
+<!-- DESGLOSE DE VENTAS -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-secondary text-white fw-bold">
         <i class="bi bi-journal-text me-1"></i> Desglose Individual de Ventas en el Periodo
@@ -285,20 +398,24 @@ try {
                     <?php if (empty($ventasDetalle)): ?>
                         <tr><td colspan="6" class="text-center py-3 text-muted">Sin ventas detalladas para mostrar.</td></tr>
                     <?php else: ?>
-                        <?php foreach ($ventasDetalle as $v): 
-                            $esPagado = ($v['tipo_pago'] === 'contado' || $v['estado_cobro'] === 'cobrado' || floatval($v['saldo_pendiente_cxc']) <= 0);
+                        <?php foreach ($ventasDetalle as $v):
+                            $montoV = floatval($v['monto']);
+                            $tPago  = strtolower($v['tipo_pago']);
+                            $estCob = strtolower($v['estado_cobro']);
+                            $sPend  = floatval($v['saldo_pendiente_cxc']);
+                            $esPag  = ($tPago === 'contado' || $estCob === 'cobrado' || $estCob === 'pagado' || ($sPend <= 0 && $tPago !== 'credito'));
                         ?>
                             <tr>
                                 <td><code>#<?= $v['id'] ?></code></td>
                                 <td><?= date('d/m/Y H:i', strtotime($v['fecha_registro'])) ?></td>
                                 <td class="fw-bold"><?= htmlspecialchars($v['cliente']) ?></td>
-                                <td><span class="badge bg-outline-dark text-uppercase"><?= htmlspecialchars($v['tipo_pago'] ?? 'contado') ?></span></td>
-                                <td class="text-end fw-bold">$<?= number_format($v['monto'], 2) ?></td>
+                                <td><span class="badge bg-dark text-uppercase"><?= htmlspecialchars($v['tipo_pago']) ?></span></td>
+                                <td class="text-end fw-bold">$<?= number_format($montoV, 2) ?></td>
                                 <td class="text-center">
-                                    <?php if ($esPagado): ?>
+                                    <?php if ($esPag): ?>
                                         <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Pagado</span>
                                     <?php else: ?>
-                                        <span class="badge bg-warning text-dark"><i class="bi bi-clock me-1"></i>Por Cobrar ($<?= number_format($v['saldo_pendiente_cxc'], 2) ?>)</span>
+                                        <span class="badge bg-warning text-dark"><i class="bi bi-clock me-1"></i>Por Cobrar ($<?= number_format($sPend > 0 ? $sPend : $montoV, 2) ?>)</span>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -310,7 +427,7 @@ try {
     </div>
 </div>
 
-<!-- NUMEROLOGÍA POR PROVEEDOR (CUENTAS POR PAGAR) -->
+<!-- CUENTAS POR PAGAR (PROVEEDORES) -->
 <div class="card shadow-sm mb-4 border-danger">
     <div class="card-header bg-danger text-white fw-bold">
         <i class="bi bi-truck me-1"></i> Estado de Pasivos y Deudas por Proveedor (CxP)
@@ -356,10 +473,9 @@ try {
     </div>
 </div>
 
-<!-- SCRIPT GENERADOR DE GRÁFICAS -->
+<!-- CHART.JS SCRIPT -->
 <script>
 document.addEventListener("DOMContentLoaded", function () {
-    // 1. Gráfica de Dona (Balance Pagado vs Pendiente)
     const ctxPie = document.getElementById('chartEstadoPago').getContext('2d');
     new Chart(ctxPie, {
         type: 'doughnut',
@@ -373,13 +489,10 @@ document.addEventListener("DOMContentLoaded", function () {
         },
         options: {
             responsive: true,
-            plugins: {
-                legend: { position: 'bottom' }
-            }
+            plugins: { legend: { position: 'bottom' } }
         }
     });
 
-    // 2. Gráfica de Barras por Cliente
     const ctxBar = document.getElementById('chartClientes').getContext('2d');
     const clientesLabels = [<?php foreach($resumenClientes as $rc) echo "'" . addslashes($rc['cliente']) . "',"; ?>];
     const dataPagado = [<?php foreach($resumenClientes as $rc) echo $rc['total_pagado'] . ","; ?>];
@@ -390,27 +503,14 @@ document.addEventListener("DOMContentLoaded", function () {
         data: {
             labels: clientesLabels,
             datasets: [
-                {
-                    label: 'Cobrado ($)',
-                    data: dataPagado,
-                    backgroundColor: '#198754'
-                },
-                {
-                    label: 'Pendiente ($)',
-                    data: dataPendiente,
-                    backgroundColor: '#dc3545'
-                }
+                { label: 'Cobrado ($)', data: dataPagado, backgroundColor: '#198754' },
+                { label: 'Pendiente ($)', data: dataPendiente, backgroundColor: '#dc3545' }
             ]
         },
         options: {
             responsive: true,
-            scales: {
-                x: { stacked: true },
-                y: { stacked: true, beginAtZero: true }
-            },
-            plugins: {
-                legend: { position: 'bottom' }
-            }
+            scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+            plugins: { legend: { position: 'bottom' } }
         }
     });
 });
