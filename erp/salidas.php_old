@@ -9,14 +9,15 @@ $usuarioId = $_SESSION['user_id'] ?? $_SESSION['usuario_id'] ?? 1;
 
 // 1. REGISTRAR NUEVA SALIDA / VENTA
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
-    $productoId      = intval($_POST['producto_id'] ?? 0);
-    $clienteNombre   = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
-    $cantidad        = floatval($_POST['cantidad'] ?? 0);
-    $precioVenta     = floatval($_POST['precio_venta'] ?? 0);
-    $estadoCobro     = $_POST['estado_cobro'] ?? 'cobrado'; // cobrado | credito
-    $metodoCobro     = $_POST['metodo_cobro'] ?? 'efectivo';
-    $requiereFactura = isset($_POST['requiere_factura']) ? 1 : 0;
-    $facturaUrl      = null;
+    $productoId       = intval($_POST['producto_id'] ?? 0);
+    $clienteNombre    = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
+    $cantidad         = floatval($_POST['cantidad'] ?? 0);
+    $precioVenta      = floatval($_POST['precio_venta'] ?? 0);
+    $estadoCobro      = $_POST['estado_cobro'] ?? 'cobrado'; // cobrado | credito
+    $fechaVencimiento = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
+    $metodoCobro      = $_POST['metodo_cobro'] ?? 'efectivo';
+    $requiereFactura  = isset($_POST['requiere_factura']) ? 1 : 0;
+    $facturaUrl       = null;
 
     if ($productoId > 0 && $cantidad > 0 && $precioVenta >= 0) {
         try {
@@ -62,8 +63,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
 
             // Insertar encabezado de Salida
             $stmtIns = $pdo->prepare("INSERT INTO salidas
-                (usuario_id, cliente, subtotal, iva, total, monto_total, estado_cobro, metodo_cobro, requiere_factura, con_factura, factura_url, tipo_pago, metodo_pago, fecha)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
+                (usuario_id, cliente, subtotal, iva, total, monto_total, estado_cobro, fecha_vencimiento, metodo_cobro, requiere_factura, con_factura, factura_url, tipo_pago, metodo_pago, fecha)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
 
             $stmtIns->execute([
                 $usuarioId,
@@ -73,6 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 $total,
                 $total,
                 $estadoCobro,
+                $fechaVencimiento,
                 $metodoCobro,
                 $requiereFactura,
                 $requiereFactura,
@@ -119,8 +121,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
             if ($estadoCobro === 'credito') {
                 $conceptoCxC = "Venta #" . $salidaId . ": " . $producto['nombre'] . ($requiereFactura ? " [Facturado 16% IVA]" : "");
                 try {
-                    $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar (cliente, concepto, monto_total, estatus, comprobante_url, fecha_registro) VALUES (?, ?, ?, 'pendiente', ?, NOW())");
-                    $stmtCxC->execute([$clienteNombre, $conceptoCxC, $total, $facturaUrl]);
+                    $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar (cliente, concepto, monto_total, estatus, comprobante_url, fecha_vencimiento, fecha_registro) VALUES (?, ?, ?, 'pendiente', ?, ?, NOW())");
+                    $stmtCxC->execute([$clienteNombre, $conceptoCxC, $total, $facturaUrl, $fechaVencimiento]);
                 } catch (\PDOException $exCxC1) {
                     try {
                         $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar (cliente, concepto, monto, estatus, comprobante_url, fecha_registro) VALUES (?, ?, ?, 'pendiente', ?, NOW())");
@@ -151,6 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
     $nuevaCantidad   = floatval($_POST['cantidad'] ?? 0);
     $nuevoPrecio     = floatval($_POST['precio_venta'] ?? 0);
     $estadoCobro     = $_POST['estado_cobro'] ?? 'cobrado';
+    $fechaVencimiento = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
     $metodoCobro     = $_POST['metodo_cobro'] ?? 'efectivo';
     $requiereFactura = isset($_POST['requiere_factura']) ? 1 : 0;
     $fecha           = $_POST['fecha'] ?? '';
@@ -236,6 +239,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
                 total = ?,
                 monto_total = ?,
                 estado_cobro = ?,
+                fecha_vencimiento = ?,
                 metodo_cobro = ?,
                 requiere_factura = ?,
                 con_factura = ?,
@@ -249,6 +253,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
                 $totalNuevo,
                 $totalNuevo,
                 $estadoCobro,
+                $fechaVencimiento,
                 $metodoCobro,
                 $requiereFactura,
                 $requiereFactura,
@@ -356,11 +361,66 @@ try {
 } catch (\PDOException $e) {
     $mensajeError = "Error al consultar historial de salidas: " . $e->getMessage();
 }
+
+// LÓGICA DE DETECCIÓN DE ALERTAS DE COBRO DE CRÉDITOS VENCIDOS / PRÓXIMOS
+$alertasVencidas = [];
+$alertasPorVencer = [];
+$fechaHoy = date('Y-m-d');
+
+foreach ($salidas as $s) {
+    if (($s['estado_cobro'] ?? '') === 'credito' && !empty($s['fecha_vencimiento'])) {
+        $fVenc = date('Y-m-d', strtotime($s['fecha_vencimiento']));
+        if ($fVenc < $fechaHoy) {
+            $alertasVencidas[] = $s;
+        } elseif ($fVenc <= date('Y-m-d', strtotime('+3 days'))) {
+            $alertasPorVencer[] = $s;
+        }
+    }
+}
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-box-arrow-up-right text-danger me-2"></i> Salidas / Ventas de Producto</h2>
 </div>
+
+<!-- COMPONENTE DE ALERTAS DE CRÉDITO Y COBRO -->
+<?php if (!empty($alertasVencidas)): ?>
+    <div class="alert alert-danger shadow-sm border-2 border-danger alert-dismissible fade show" role="alert">
+        <h5 class="alert-heading fw-bold mb-2">
+            <i class="bi bi-exclamation-diamond-fill me-2 fs-4"></i>
+            ¡Atención! Hay <?= count($alertasVencidas) ?> venta(s) a crédito VENCIDAS pendientes de cobrar:
+        </h5>
+        <ul class="mb-0 ps-3">
+            <?php foreach ($alertasVencidas as $aV): ?>
+                <li>
+                    <strong>Venta #<?= $aV['id'] ?></strong> - Cliente: <u><?= htmlspecialchars($aV['cliente']) ?></u> - 
+                    Monto: <strong>$<?= number_format(floatval($aV['total'] ?? $aV['monto_total'] ?? 0), 2) ?></strong> - 
+                    Venció el: <span class="badge bg-danger"><?= date('d/m/Y', strtotime($aV['fecha_vencimiento'])) ?></span>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
+
+<?php if (!empty($alertasPorVencer)): ?>
+    <div class="alert alert-warning shadow-sm border-2 border-warning alert-dismissible fade show" role="alert">
+        <h5 class="alert-heading fw-bold mb-2">
+            <i class="bi bg-warning text-dark bi-bell-fill me-2 fs-5 p-1 rounded"></i>
+            Próximos cobros a crédito (Por vencer pronto o hoy):
+        </h5>
+        <ul class="mb-0 ps-3">
+            <?php foreach ($alertasPorVencer as $aP): ?>
+                <li>
+                    <strong>Venta #<?= $aP['id'] ?></strong> - Cliente: <u><?= htmlspecialchars($aP['cliente']) ?></u> - 
+                    Monto: <strong>$<?= number_format(floatval($aP['total'] ?? $aP['monto_total'] ?? 0), 2) ?></strong> - 
+                    Vence el: <span class="badge bg-dark"><?= date('d/m/Y', strtotime($aP['fecha_vencimiento'])) ?></span>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
 
 <?php if ($mensajeExito): ?>
     <div class="alert alert-success alert-dismissible fade show" role="alert">
@@ -434,10 +494,16 @@ try {
 
             <div class="col-md-2">
                 <label class="form-label fw-bold">Estatus del Cobro (*):</label>
-                <select name="estado_cobro" class="form-select" required>
+                <select name="estado_cobro" id="select_estado_cobro" class="form-select" required>
                     <option value="cobrado">Cobrado (Contado)</option>
                     <option value="credito">A Crédito (Manda a CxC)</option>
                 </select>
+            </div>
+
+            <!-- NUEVO CAMPO: FECHA DE VENCIMIENTO SI ES A CRÉDITO -->
+            <div class="col-md-3 d-none" id="div_fecha_vencimiento">
+                <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Vencimiento de Crédito (*):</label>
+                <input type="date" name="fecha_vencimiento" id="input_fecha_vencimiento" class="form-control border-danger">
             </div>
 
             <div class="col-md-3">
@@ -449,12 +515,12 @@ try {
                 </select>
             </div>
 
-            <div class="col-md-5">
+            <div class="col-md-3">
                 <label class="form-label fw-bold">Comprobante / Ticket (PDF/XML/Imagen):</label>
                 <input type="file" name="comprobante" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.webp,.xml">
             </div>
 
-            <div class="col-md-4 d-flex align-items-center mt-4">
+            <div class="col-md-3 d-flex align-items-center mt-4">
                 <div class="form-check">
                     <input class="form-check-input" type="checkbox" name="requiere_factura" id="requiere_factura" value="1">
                     <label class="form-check-label fw-bold" for="requiere_factura">
@@ -508,13 +574,14 @@ try {
                         <th class="text-end">IVA</th>
                         <th class="text-end">Total</th>
                         <th class="text-center">Estatus</th>
+                        <th class="text-center">Vencimiento</th>
                         <th class="text-center">Comprobante</th>
                         <th class="text-center">Acciones</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($salidas)): ?>
-                        <tr><td colspan="12" class="text-center py-3 text-muted">No hay registros de salidas aún.</td></tr>
+                        <tr><td colspan="13" class="text-center py-3 text-muted">No hay registros de salidas aún.</td></tr>
                     <?php else: ?>
                         <?php foreach ($salidas as $s): ?>
                             <?php
@@ -523,6 +590,22 @@ try {
                                 $ivaMostrar = floatval($s['iva'] ?? 0);
                                 $totalMostrar = floatval($s['total'] ?? $s['monto_total'] ?? 0);
                                 $metodo = $s['metodo_cobro'] ?? $s['metodo_pago'] ?? 'efectivo';
+
+                                // Evaluación de Fecha de Vencimiento
+                                $vencimientoTexto = '-';
+                                $badgeVencimiento = 'secondary';
+                                if (($s['estado_cobro'] ?? '') === 'credito' && !empty($s['fecha_vencimiento'])) {
+                                    $fVenc = date('Y-m-d', strtotime($s['fecha_vencimiento']));
+                                    $vencimientoTexto = date('d/m/Y', strtotime($fVenc));
+                                    
+                                    if ($fVenc < $fechaHoy) {
+                                        $badgeVencimiento = 'danger'; // Vencido
+                                    } elseif ($fVenc <= date('Y-m-d', strtotime('+3 days'))) {
+                                        $badgeVencimiento = 'warning text-dark'; // Vence pronto
+                                    } else {
+                                        $badgeVencimiento = 'info text-dark';
+                                    }
+                                }
                             ?>
                             <tr>
                                 <td>#<?= $s['id'] ?></td>
@@ -539,6 +622,15 @@ try {
                                         <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i> Cobrado</span>
                                     <?php else: ?>
                                         <span class="badge bg-warning text-dark"><i class="bi bi-clock me-1"></i> Crédito</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="text-center">
+                                    <?php if ($vencimientoTexto !== '-'): ?>
+                                        <span class="badge bg-<?= $badgeVencimiento ?>">
+                                            <i class="bi bi-calendar-event me-1"></i><?= $vencimientoTexto ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span class="text-muted small">-</span>
                                     <?php endif; ?>
                                 </td>
                                 <td class="text-center">
@@ -561,6 +653,7 @@ try {
                                                 data-cantidad="<?= $s['cantidad'] ?? 0 ?>"
                                                 data-precio="<?= $s['precio_unitario'] ?? 0 ?>"
                                                 data-estado="<?= $s['estado_cobro'] ?? 'cobrado' ?>"
+                                                data-vencimiento="<?= $s['fecha_vencimiento'] ?? '' ?>"
                                                 data-metodo="<?= $metodo ?>"
                                                 data-factura="<?= $s['requiere_factura'] ?? ($s['iva'] > 0 ? 1 : 0) ?>"
                                                 data-fecha="<?= $fecha ? date('Y-m-d\TH:i', strtotime($fecha)) : '' ?>"
@@ -634,6 +727,12 @@ try {
                         </select>
                     </div>
 
+                    <!-- CAMPO DINÁMICO FECHA VENCIMIENTO EN MODAL -->
+                    <div class="col-md-6 d-none" id="edit_div_vencimiento">
+                        <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Fecha Vencimiento Crédito:</label>
+                        <input type="date" name="fecha_vencimiento" id="edit_fecha_vencimiento" class="form-control border-danger">
+                    </div>
+
                     <div class="col-md-6">
                         <label class="form-label fw-bold">Método de Cobro:</label>
                         <select name="metodo_cobro" id="edit_metodo_cobro" class="form-select">
@@ -674,6 +773,26 @@ document.addEventListener('DOMContentLoaded', function() {
     const inputPrecio      = document.getElementById('input_precio_venta');
     const inputCantidad    = document.getElementById('input_cantidad');
     const chkFactura       = document.getElementById('requiere_factura');
+
+    // Manejo dinámico de fecha de vencimiento en creación
+    const selectEstadoCobro = document.getElementById('select_estado_cobro');
+    const divVencimiento    = document.getElementById('div_fecha_vencimiento');
+    const inputVencimiento  = document.getElementById('input_fecha_vencimiento');
+
+    function toggleVencimiento() {
+        if (selectEstadoCobro && selectEstadoCobro.value === 'credito') {
+            divVencimiento.classList.remove('d-none');
+            inputVencimiento.setAttribute('required', 'required');
+        } else if (divVencimiento) {
+            divVencimiento.classList.add('d-none');
+            inputVencimiento.removeAttribute('required');
+            inputVencimiento.value = '';
+        }
+    }
+
+    if (selectEstadoCobro) {
+        selectEstadoCobro.addEventListener('change', toggleVencimiento);
+    }
 
     // Elementos del Card informativo de Stock
     const cardStock        = document.getElementById('card_info_stock');
@@ -741,6 +860,24 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Llenar Modal de Edición de Salidas
     var modalEditar = document.getElementById('modalEditarSalida');
+    const editEstadoCobro  = document.getElementById('edit_estado_cobro');
+    const editDivVenc      = document.getElementById('edit_div_vencimiento');
+    const editInputVenc    = document.getElementById('edit_fecha_vencimiento');
+
+    function toggleEditVencimiento() {
+        if (editEstadoCobro && editEstadoCobro.value === 'credito') {
+            editDivVenc.classList.remove('d-none');
+            editInputVenc.setAttribute('required', 'required');
+        } else if (editDivVenc) {
+            editDivVenc.classList.add('d-none');
+            editInputVenc.removeAttribute('required');
+        }
+    }
+
+    if (editEstadoCobro) {
+        editEstadoCobro.addEventListener('change', toggleEditVencimiento);
+    }
+
     if (modalEditar) {
         modalEditar.addEventListener('show.bs.modal', function (event) {
             var button = event.relatedTarget;
@@ -750,7 +887,12 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('edit_cliente').value = button.getAttribute('data-cliente');
             document.getElementById('edit_cantidad').value = button.getAttribute('data-cantidad');
             document.getElementById('edit_precio_venta').value = button.getAttribute('data-precio');
-            document.getElementById('edit_estado_cobro').value = button.getAttribute('data-estado');
+            
+            const estadoVal = button.getAttribute('data-estado');
+            editEstadoCobro.value = estadoVal;
+            editInputVenc.value   = button.getAttribute('data-vencimiento') || '';
+            toggleEditVencimiento();
+
             document.getElementById('edit_metodo_cobro').value = button.getAttribute('data-metodo');
             document.getElementById('edit_fecha').value = button.getAttribute('data-fecha') || '';
             document.getElementById('edit_requiere_factura').checked = (button.getAttribute('data-factura') === '1');
