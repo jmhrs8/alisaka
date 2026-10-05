@@ -106,12 +106,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
             $stmtUpdStk = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
             $stmtUpdStk->execute([$cantidad, $productoId]);
 
-            // Registrar en INGRESOS
+            // Registrar en INGRESOS con los nombres exactos de la tabla
             if ($estadoCobro === 'cobrado') {
                 $conceptoIngreso = "Venta / Salida #" . $salidaId . " - " . $producto['nombre'] . " (" . $clienteNombre . ")" . ($requiereFactura ? " [Facturado 16% IVA]" : "");
                 
-                $stmtIng = $pdo->prepare("INSERT INTO ingresos (concepto, monto_total, metodo_pago, comprobante_url, fecha_pago) VALUES (?, ?, ?, ?, NOW())");
-                $stmtIng->execute([$conceptoIngreso, $total, $metodoCobro, $facturaUrl]);
+                $stmtIng = $pdo->prepare("INSERT INTO ingresos 
+                    (salida_id, usuario_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, comprobante_url, fecha) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
+                
+                $stmtIng->execute([
+                    $salidaId,
+                    $usuarioId,
+                    $productoId,
+                    $cantidad,
+                    $precioVenta,
+                    $conceptoIngreso,
+                    $subtotal,
+                    $iva,
+                    $total,
+                    $metodoCobro,
+                    $facturaUrl
+                ]);
             }
 
             // Registrar en CUENTAS_COBRAR
@@ -306,7 +321,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salid
                 @unlink(__DIR__ . '/' . $archivo);
             }
 
-            // 3. Eliminar detalle y registro
+            // 3. Eliminar registros vinculados en ingresos si existen
+            $stmtDelIng = $pdo->prepare("DELETE FROM ingresos WHERE salida_id = ?");
+            $stmtDelIng->execute([$salidaId]);
+
+            // 4. Eliminar detalle y registro de salida
             $stmtDelDet = $pdo->prepare("DELETE FROM detalle_salidas WHERE salida_id = ?");
             $stmtDelDet->execute([$salidaId]);
 
