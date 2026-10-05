@@ -109,11 +109,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
             // Registrar en INGRESOS con los nombres exactos de la tabla
             if ($estadoCobro === 'cobrado') {
                 $conceptoIngreso = "Venta / Salida #" . $salidaId . " - " . $producto['nombre'] . " (" . $clienteNombre . ")" . ($requiereFactura ? " [Facturado 16% IVA]" : "");
-                
-                $stmtIng = $pdo->prepare("INSERT INTO ingresos 
-                    (salida_id, usuario_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, comprobante_url, fecha) 
+
+                $stmtIng = $pdo->prepare("INSERT INTO ingresos
+                    (salida_id, usuario_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, comprobante_url, fecha)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
-                
+
                 $stmtIng->execute([
                     $salidaId,
                     $usuarioId,
@@ -129,12 +129,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 ]);
             }
 
-            // Registrar en CUENTAS_COBRAR
+            // Registrar en CUENTAS_COBRAR con la estructura real de la tabla
             if ($estadoCobro === 'credito') {
-                $conceptoCxC = "Venta #" . $salidaId . ": " . $producto['nombre'] . ($requiereFactura ? " [Facturado 16% IVA]" : "");
+                $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar 
+                    (salida_id, cliente, monto, estatus, fecha_vencimiento, fecha_emision) 
+                    VALUES (?, ?, ?, 'pendiente', ?, NOW())");
                 
-                $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar (cliente, concepto, monto_total, estatus, comprobante_url, fecha_vencimiento, fecha_registro) VALUES (?, ?, ?, 'pendiente', ?, ?, NOW())");
-                $stmtCxC->execute([$clienteNombre, $conceptoCxC, $total, $facturaUrl, $fechaVencimiento]);
+                $stmtCxC->execute([
+                    $salidaId,
+                    $clienteNombre,
+                    $total,
+                    $fechaVencimiento
+                ]);
             }
 
             $pdo->commit();
