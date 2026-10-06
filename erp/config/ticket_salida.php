@@ -1,25 +1,43 @@
 <?php
 session_start();
 
-// Incluir la conexión real de tu servidor
-require_once __DIR__ . '/config/db.php';
+// 1. Cargar la conexión desde config/db.php
+$config_path = __DIR__ . '/config/db.php';
 
+if (file_exists($config_path)) {
+    require_once $config_path;
+}
+
+// 2. Fallback de respaldo con credenciales reales de ALISAKA
+if (!isset($pdo) || $pdo === null) {
+    try {
+        $pdo = new PDO("mysql:host=localhost;dbname=erp_inventory;charset=utf8mb4", "root", "jmhl2474", [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+        ]);
+    } catch (PDOException $e) {
+        die("Error de conexión a la base de datos: " . $e->getMessage());
+    }
+}
+
+// 3. Obtención y validación del ID de la salida
 $id = intval($_GET['id'] ?? 0);
 
 if ($id <= 0) {
     die("ID de venta/salida no válido.");
 }
 
-// 1. Obtener la información general de la venta/salida
+// 4. Consulta de la cabecera de la salida
 $stmt = $pdo->prepare("SELECT * FROM salidas WHERE id = ?");
 $stmt->execute([$id]);
 $venta = $stmt->fetch();
 
 if (!$venta) {
-    die("La nota o salida solicitada no existe.");
+    die("La nota o salida #{$id} no existe en la base de datos.");
 }
 
-// 2. Obtener el detalle de los productos pertenecientes a esta salida
+// 5. Consulta de los detalles/productos de la salida
 $stmtDetalle = $pdo->prepare("
     SELECT ds.*, p.nombre AS producto_nombre 
     FROM detalle_salidas ds
@@ -29,7 +47,7 @@ $stmtDetalle = $pdo->prepare("
 $stmtDetalle->execute([$id]);
 $detalles = $stmtDetalle->fetchAll();
 
-// Datos calculados de la cabecera
+// 6. Formateo y cálculo de valores
 $subtotal = floatval($venta['subtotal'] ?? 0);
 $iva = floatval($venta['iva'] ?? 0);
 $total = floatval($venta['total'] ?? $venta['monto_total'] ?? 0);
