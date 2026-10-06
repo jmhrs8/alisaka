@@ -131,10 +131,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
 
             // Registrar en CUENTAS_COBRAR con la estructura real de la tabla
             if ($estadoCobro === 'credito') {
-                $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar 
-                    (salida_id, cliente, monto, estatus, fecha_vencimiento, fecha_emision) 
+                $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar
+                    (salida_id, cliente, monto, estatus, fecha_vencimiento, fecha_emision)
                     VALUES (?, ?, ?, 'pendiente', ?, NOW())");
-                
+
                 $stmtCxC->execute([
                     $salidaId,
                     $clienteNombre,
@@ -657,6 +657,11 @@ foreach ($salidas as $s) {
                                 </td>
                                 <td class="text-center">
                                     <div class="btn-group btn-group-sm">
+                                        <!-- Botón Imprimir Nota -->
+                                        <a href="ticket_salida.php?id=<?= $s['id'] ?>" target="_blank" class="btn btn-outline-info" title="Imprimir Nota de Compra">
+                                            <i class="bi bi-receipt"></i>
+                                        </a>
+
                                         <!-- Botón Editar -->
                                         <button type="button" class="btn btn-outline-warning"
                                                 data-bs-toggle="modal"
