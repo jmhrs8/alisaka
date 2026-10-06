@@ -37,7 +37,7 @@ function enviarCorreoSistema($destinatario, $asunto, $cuerpoHTML, $rutaAdjunto =
         $mail->Port       = 587;                            // Puerto seguro SMTP
 
         // Remitente y Destinatario
-        $mail->setFrom('alisaka@gmail.com', 'Sistema de Control ERP');
+        $mail->setFrom('jmhrs8@gmail.com', 'Sistema de Control ERP');
         $mail->addAddress($destinatario);
 
         // Archivo adjunto (Ejemplo: PDF del reporte del día)
