@@ -74,7 +74,7 @@ try {
             break;
         case 'mes':
         default:
-            $fechaInicio = date('Y-m-01 00:00:00');
+            $fechaInicio = date('Y-01-01 00:00:00');
             break;
     }
 
@@ -108,8 +108,15 @@ try {
     $stmtP = $pdo->query("SELECT SUM(monto) FROM cuentas_pagar WHERE estatus = 'pendiente'");
     $montoTotalCxP = floatval($stmtP->fetchColumn() ?? 0);
 
-    // D. Alerta de Productos con Stock Bajo / Agotado
-    $stmtStock = $pdo->query("SELECT nombre, stock, stock_minimo FROM productos WHERE stock <= stock_minimo ORDER BY stock ASC LIMIT 10");
+    // D. Alerta de Productos con Stock Bajo / Agotado (CORREGIDO)
+    // Lee la columna real de existencias (stock_base) para evitar falsos reportes de stock en 0
+    $stmtStock = $pdo->query("SELECT nombre, 
+                                     COALESCE(stock_base, stock, 0) AS stock_actual, 
+                                     stock_minimo 
+                              FROM productos 
+                              WHERE COALESCE(stock_base, stock, 0) <= stock_minimo 
+                              ORDER BY stock_actual ASC 
+                              LIMIT 10");
     $productosStockBajo = $stmtStock->fetchAll(PDO::FETCH_ASSOC);
 
     // E. Próximos Cobros A Vencer o Vencidos (CxC)
@@ -133,8 +140,8 @@ try {
         foreach ($productosStockBajo as $prod) {
             $rowsStock .= "<tr>
                 <td style='padding: 8px; border: 1px solid #dee2e6;'>" . htmlspecialchars($prod['nombre']) . "</td>
-                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;'>" . number_format($prod['stock'], 0) . "</td>
-                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>" . number_format($prod['stock_minimo'], 0) . "</td>
+                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;'>" . number_format($prod['stock_actual'], 2) . "</td>
+                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>" . number_format($prod['stock_minimo'], 2) . "</td>
             </tr>";
         }
         $htmlStockTabla = "
