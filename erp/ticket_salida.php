@@ -1,9 +1,12 @@
 <?php
 session_start();
-// Si manejas conexión a DB global, asegúrate de incluir tu archivo de conexión aquí:
-// require_once 'includes/db.php'; 
 
-// Conexión fallback usando la configuración estándar de PDO
+// Incluir la conexión global a la base de datos si existe
+if (file_exists('includes/db.php')) {
+    require_once 'includes/db.php';
+}
+
+// Conexión fallback usando PDO si $pdo no está definida
 if (!isset($pdo)) {
     try {
         $pdo = new PDO("mysql:host=localhost;dbname=erp_db;charset=utf8mb4", "usuario", "password", [
@@ -21,12 +24,8 @@ if ($id <= 0) {
     die("ID de venta/salida no válido.");
 }
 
-// Obtener la información de la salida y sus detalles
-$stmt = $pdo->prepare("SELECT s.*, ds.producto_id, ds.cantidad, ds.precio_unitario, ds.subtotal AS detalle_subtotal, p.nombre AS producto_nombre
-                       FROM salidas s
-                       LEFT JOIN detalle_salidas ds ON s.id = ds.salida_id
-                       LEFT JOIN productos p ON ds.producto_id = p.id
-                       WHERE s.id = ?");
+// 1. Obtener la información general de la venta/salida
+$stmt = $pdo->prepare("SELECT * FROM salidas WHERE id = ?");
 $stmt->execute([$id]);
 $venta = $stmt->fetch();
 
@@ -34,7 +33,17 @@ if (!$venta) {
     die("La nota o salida solicitada no existe.");
 }
 
-// Datos calculados
+// 2. Obtener el detalle de los productos pertenecientes a esta salida
+$stmtDetalle = $pdo->prepare("
+    SELECT ds.*, p.nombre AS producto_nombre 
+    FROM detalle_salidas ds
+    LEFT JOIN productos p ON ds.producto_id = p.id
+    WHERE ds.salida_id = ?
+");
+$stmtDetalle->execute([$id]);
+$detalles = $stmtDetalle->fetchAll();
+
+// Datos calculados de la cabecera
 $subtotal = floatval($venta['subtotal'] ?? 0);
 $iva = floatval($venta['iva'] ?? 0);
 $total = floatval($venta['total'] ?? $venta['monto_total'] ?? 0);
@@ -44,7 +53,7 @@ $fecha = !empty($venta['fecha']) ? date('d/m/Y H:i', strtotime($venta['fecha']))
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Nota de Compra #<?= $venta['id'] ?></title>
+    <title>Nota de Compra #<?= htmlspecialchars($venta['id']) ?></title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -215,13 +224,26 @@ $fecha = !empty($venta['fecha']) ? date('d/m/Y H:i', strtotime($venta['fecha']))
             </tr>
         </thead>
         <tbody>
-            <tr>
-                <td class="text-center">#<?= htmlspecialchars($venta['producto_id'] ?? 'N/A') ?></td>
-                <td><?= htmlspecialchars($venta['producto_nombre'] ?? 'Producto General') ?></td>
-                <td class="text-center"><?= number_format(floatval($venta['cantidad'] ?? 0), 2) ?></td>
-                <td class="text-right">$<?= number_format(floatval($venta['precio_unitario'] ?? 0), 2) ?></td>
-                <td class="text-right">$<?= number_format($subtotal, 2) ?></td>
-            </tr>
+            <?php if (!empty($detalles)): ?>
+                <?php foreach ($detalles as $det): ?>
+                    <tr>
+                        <td class="text-center">#<?= htmlspecialchars($det['producto_id'] ?? 'N/A') ?></td>
+                        <td><?= htmlspecialchars($det['producto_nombre'] ?? 'Producto General') ?></td>
+                        <td class="text-center"><?= number_format(floatval($det['cantidad'] ?? 0), 2) ?></td>
+                        <td class="text-right">$<?= number_format(floatval($det['precio_unitario'] ?? 0), 2) ?></td>
+                        <td class="text-right">$<?= number_format(floatval($det['subtotal'] ?? ($det['cantidad'] * $det['precio_unitario'])), 2) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php else: ?>
+                <!-- Fallback en caso de no existir registros en detalle_salidas -->
+                <tr>
+                    <td class="text-center">#<?= htmlspecialchars($venta['producto_id'] ?? '1') ?></td>
+                    <td><?= htmlspecialchars($venta['concepto'] ?? $venta['producto_nombre'] ?? 'Venta General') ?></td>
+                    <td class="text-center"><?= number_format(floatval($venta['cantidad'] ?? 1), 2) ?></td>
+                    <td class="text-right">$<?= number_format(floatval($venta['precio_unitario'] ?? $subtotal), 2) ?></td>
+                    <td class="text-right">$<?= number_format($subtotal, 2) ?></td>
+                </tr>
+            <?php endif; ?>
         </tbody>
     </table>
 
@@ -246,7 +268,7 @@ $fecha = !empty($venta['fecha']) ? date('d/m/Y H:i', strtotime($venta['fecha']))
     </div>
 
     <button class="btn-imprimir" onclick="window.print();">
-        <i class="bi bi-printer"></i> Imprimir Nota
+        Imprimir Nota
     </button>
 </div>
 
