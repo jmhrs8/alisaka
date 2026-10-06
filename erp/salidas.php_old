@@ -1,6 +1,11 @@
 <?php
 require_once 'includes/header.php';
 
+// Asegurar que PDO lance excepciones para evitar pantallas en blanco silenciosas
+if (isset($pdo)) {
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+}
+
 $mensajeExito = '';
 $mensajeError = '';
 
@@ -101,36 +106,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
             $stmtUpdStk = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
             $stmtUpdStk->execute([$cantidad, $productoId]);
 
-            // Registrar en INGRESOS
+            // Registrar en INGRESOS con los nombres exactos de la tabla
             if ($estadoCobro === 'cobrado') {
                 $conceptoIngreso = "Venta / Salida #" . $salidaId . " - " . $producto['nombre'] . " (" . $clienteNombre . ")" . ($requiereFactura ? " [Facturado 16% IVA]" : "");
-                try {
-                    $stmtIng = $pdo->prepare("INSERT INTO ingresos (concepto, monto_total, metodo_pago, comprobante_url, fecha_pago) VALUES (?, ?, ?, ?, NOW())");
-                    $stmtIng->execute([$conceptoIngreso, $total, $metodoCobro, $facturaUrl]);
-                } catch (\PDOException $exIng1) {
-                    try {
-                        $stmtIng = $pdo->prepare("INSERT INTO ingresos (concepto, total, metodo_pago, comprobante_url, fecha_pago) VALUES (?, ?, ?, ?, NOW())");
-                        $stmtIng->execute([$conceptoIngreso, $total, $metodoCobro, $facturaUrl]);
-                    } catch (\PDOException $exIng2) {
-                        // Salta si hay inconsistencia estructural opcional
-                    }
-                }
+
+                $stmtIng = $pdo->prepare("INSERT INTO ingresos
+                    (salida_id, usuario_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, comprobante_url, fecha)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
+
+                $stmtIng->execute([
+                    $salidaId,
+                    $usuarioId,
+                    $productoId,
+                    $cantidad,
+                    $precioVenta,
+                    $conceptoIngreso,
+                    $subtotal,
+                    $iva,
+                    $total,
+                    $metodoCobro,
+                    $facturaUrl
+                ]);
             }
 
-            // Registrar en CUENTAS_COBRAR
+            // Registrar en CUENTAS_COBRAR con la estructura real de la tabla
             if ($estadoCobro === 'credito') {
-                $conceptoCxC = "Venta #" . $salidaId . ": " . $producto['nombre'] . ($requiereFactura ? " [Facturado 16% IVA]" : "");
-                try {
-                    $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar (cliente, concepto, monto_total, estatus, comprobante_url, fecha_vencimiento, fecha_registro) VALUES (?, ?, ?, 'pendiente', ?, ?, NOW())");
-                    $stmtCxC->execute([$clienteNombre, $conceptoCxC, $total, $facturaUrl, $fechaVencimiento]);
-                } catch (\PDOException $exCxC1) {
-                    try {
-                        $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar (cliente, concepto, monto, estatus, comprobante_url, fecha_registro) VALUES (?, ?, ?, 'pendiente', ?, NOW())");
-                        $stmtCxC->execute([$clienteNombre, $conceptoCxC, $total, $facturaUrl]);
-                    } catch (\PDOException $exCxC2) {
-                        // Salta si hay inconsistencia estructural opcional
-                    }
-                }
+                $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar 
+                    (salida_id, cliente, monto, estatus, fecha_vencimiento, fecha_emision) 
+                    VALUES (?, ?, ?, 'pendiente', ?, NOW())");
+                
+                $stmtCxC->execute([
+                    $salidaId,
+                    $clienteNombre,
+                    $total,
+                    $fechaVencimiento
+                ]);
             }
 
             $pdo->commit();
@@ -317,7 +327,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salid
                 @unlink(__DIR__ . '/' . $archivo);
             }
 
-            // 3. Eliminar detalle y registro
+            // 3. Eliminar registros vinculados en ingresos si existen
+            $stmtDelIng = $pdo->prepare("DELETE FROM ingresos WHERE salida_id = ?");
+            $stmtDelIng->execute([$salidaId]);
+
+            // 4. Eliminar detalle y registro de salida
             $stmtDelDet = $pdo->prepare("DELETE FROM detalle_salidas WHERE salida_id = ?");
             $stmtDelDet->execute([$salidaId]);
 
@@ -393,8 +407,8 @@ foreach ($salidas as $s) {
         <ul class="mb-0 ps-3">
             <?php foreach ($alertasVencidas as $aV): ?>
                 <li>
-                    <strong>Venta #<?= $aV['id'] ?></strong> - Cliente: <u><?= htmlspecialchars($aV['cliente']) ?></u> - 
-                    Monto: <strong>$<?= number_format(floatval($aV['total'] ?? $aV['monto_total'] ?? 0), 2) ?></strong> - 
+                    <strong>Venta #<?= $aV['id'] ?></strong> - Cliente: <u><?= htmlspecialchars($aV['cliente']) ?></u> -
+                    Monto: <strong>$<?= number_format(floatval($aV['total'] ?? $aV['monto_total'] ?? 0), 2) ?></strong> -
                     Venció el: <span class="badge bg-danger"><?= date('d/m/Y', strtotime($aV['fecha_vencimiento'])) ?></span>
                 </li>
             <?php endforeach; ?>
@@ -407,13 +421,13 @@ foreach ($salidas as $s) {
     <div class="alert alert-warning shadow-sm border-2 border-warning alert-dismissible fade show" role="alert">
         <h5 class="alert-heading fw-bold mb-2">
             <i class="bi bg-warning text-dark bi-bell-fill me-2 fs-5 p-1 rounded"></i>
-            Próximos cobros a crédito (Por vencer pronto o hoy):
+            Próximos cobros a crédito (Por vencer pronto u hoy):
         </h5>
         <ul class="mb-0 ps-3">
             <?php foreach ($alertasPorVencer as $aP): ?>
                 <li>
-                    <strong>Venta #<?= $aP['id'] ?></strong> - Cliente: <u><?= htmlspecialchars($aP['cliente']) ?></u> - 
-                    Monto: <strong>$<?= number_format(floatval($aP['total'] ?? $aP['monto_total'] ?? 0), 2) ?></strong> - 
+                    <strong>Venta #<?= $aP['id'] ?></strong> - Cliente: <u><?= htmlspecialchars($aP['cliente']) ?></u> -
+                    Monto: <strong>$<?= number_format(floatval($aP['total'] ?? $aP['monto_total'] ?? 0), 2) ?></strong> -
                     Vence el: <span class="badge bg-dark"><?= date('d/m/Y', strtotime($aP['fecha_vencimiento'])) ?></span>
                 </li>
             <?php endforeach; ?>
@@ -500,7 +514,6 @@ foreach ($salidas as $s) {
                 </select>
             </div>
 
-            <!-- NUEVO CAMPO: FECHA DE VENCIMIENTO SI ES A CRÉDITO -->
             <div class="col-md-3 d-none" id="div_fecha_vencimiento">
                 <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Vencimiento de Crédito (*):</label>
                 <input type="date" name="fecha_vencimiento" id="input_fecha_vencimiento" class="form-control border-danger">
@@ -597,11 +610,11 @@ foreach ($salidas as $s) {
                                 if (($s['estado_cobro'] ?? '') === 'credito' && !empty($s['fecha_vencimiento'])) {
                                     $fVenc = date('Y-m-d', strtotime($s['fecha_vencimiento']));
                                     $vencimientoTexto = date('d/m/Y', strtotime($fVenc));
-                                    
+
                                     if ($fVenc < $fechaHoy) {
-                                        $badgeVencimiento = 'danger'; // Vencido
+                                        $badgeVencimiento = 'danger';
                                     } elseif ($fVenc <= date('Y-m-d', strtotime('+3 days'))) {
-                                        $badgeVencimiento = 'warning text-dark'; // Vence pronto
+                                        $badgeVencimiento = 'warning text-dark';
                                     } else {
                                         $badgeVencimiento = 'info text-dark';
                                     }
@@ -727,7 +740,6 @@ foreach ($salidas as $s) {
                         </select>
                     </div>
 
-                    <!-- CAMPO DINÁMICO FECHA VENCIMIENTO EN MODAL -->
                     <div class="col-md-6 d-none" id="edit_div_vencimiento">
                         <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Fecha Vencimiento Crédito:</label>
                         <input type="date" name="fecha_vencimiento" id="edit_fecha_vencimiento" class="form-control border-danger">
@@ -774,7 +786,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const inputCantidad    = document.getElementById('input_cantidad');
     const chkFactura       = document.getElementById('requiere_factura');
 
-    // Manejo dinámico de fecha de vencimiento en creación
     const selectEstadoCobro = document.getElementById('select_estado_cobro');
     const divVencimiento    = document.getElementById('div_fecha_vencimiento');
     const inputVencimiento  = document.getElementById('input_fecha_vencimiento');
@@ -794,14 +805,12 @@ document.addEventListener('DOMContentLoaded', function() {
         selectEstadoCobro.addEventListener('change', toggleVencimiento);
     }
 
-    // Elementos del Card informativo de Stock
     const cardStock        = document.getElementById('card_info_stock');
     const badgeStockStatus = document.getElementById('badge_stock_status');
     const lblStockCant     = document.getElementById('lbl_stock_cant');
     const lblStockUnidad   = document.getElementById('lbl_stock_unidad');
     const lblStockPrecio   = document.getElementById('lbl_stock_precio');
 
-    // Totales de vista previa
     const lblSubtotal      = document.getElementById('lbl_subtotal');
     const lblIva           = document.getElementById('lbl_iva');
     const lblTotal         = document.getElementById('lbl_total');
@@ -828,16 +837,13 @@ document.addEventListener('DOMContentLoaded', function() {
             const unidad = selectedOption.getAttribute('data-unidad') || '';
 
             if (this.value !== "") {
-                // Asignar el precio base
                 inputPrecio.value = precio ? parseFloat(precio).toFixed(2) : '0.00';
 
-                // Mostrar tarjeta informativa
                 cardStock.classList.remove('d-none');
                 lblStockCant.textContent   = stock.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
                 lblStockUnidad.textContent = unidad;
                 lblStockPrecio.textContent = '$' + (precio ? parseFloat(precio).toFixed(2) : '0.00');
 
-                // Cambiar el color de la etiqueta según la cantidad de stock
                 if (stock <= 0) {
                     badgeStockStatus.className = 'badge bg-danger fs-6 mb-1';
                 } else if (stock <= 5) {
@@ -858,7 +864,6 @@ document.addEventListener('DOMContentLoaded', function() {
     if (inputPrecio)   inputPrecio.addEventListener('input', calcularTotales);
     if (chkFactura)    chkFactura.addEventListener('change', calcularTotales);
 
-    // Llenar Modal de Edición de Salidas
     var modalEditar = document.getElementById('modalEditarSalida');
     const editEstadoCobro  = document.getElementById('edit_estado_cobro');
     const editDivVenc      = document.getElementById('edit_div_vencimiento');
@@ -887,7 +892,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('edit_cliente').value = button.getAttribute('data-cliente');
             document.getElementById('edit_cantidad').value = button.getAttribute('data-cantidad');
             document.getElementById('edit_precio_venta').value = button.getAttribute('data-precio');
-            
+
             const estadoVal = button.getAttribute('data-estado');
             editEstadoCobro.value = estadoVal;
             editInputVenc.value   = button.getAttribute('data-vencimiento') || '';

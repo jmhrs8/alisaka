@@ -108,13 +108,13 @@ try {
     $stmtP = $pdo->query("SELECT SUM(monto) FROM cuentas_pagar WHERE estatus = 'pendiente'");
     $montoTotalCxP = floatval($stmtP->fetchColumn() ?? 0);
 
-    // D. Alerta de Productos con Stock Bajo / Agotado (CORREGIDO CÁLCULO REAL DE UNIDADES BASE)
+    // D. Alerta de Productos con Stock Bajo / Agotado (CORREGIDO CON ESTRUCTURA REAL)
     $stmtStock = $pdo->query("SELECT nombre, 
-                                     (stock * COALESCE(NULLIF(contenido_empaque, 0), 1)) AS stock_real, 
+                                     COALESCE(NULLIF(stock_actual, 0), (stock * COALESCE(NULLIF(unidades_por_empaque, 0), 1))) AS stock_base_total, 
                                      stock_minimo 
                               FROM productos 
-                              WHERE (stock * COALESCE(NULLIF(contenido_empaque, 0), 1)) <= stock_minimo 
-                              ORDER BY stock_real ASC 
+                              WHERE COALESCE(NULLIF(stock_actual, 0), (stock * COALESCE(NULLIF(unidades_por_empaque, 0), 1))) <= stock_minimo 
+                              ORDER BY stock_base_total ASC 
                               LIMIT 10");
     $productosStockBajo = $stmtStock->fetchAll(PDO::FETCH_ASSOC);
 
@@ -139,7 +139,7 @@ try {
         foreach ($productosStockBajo as $prod) {
             $rowsStock .= "<tr>
                 <td style='padding: 8px; border: 1px solid #dee2e6;'>" . htmlspecialchars($prod['nombre']) . "</td>
-                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;'>" . number_format($prod['stock_real'], 2) . "</td>
+                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;'>" . number_format($prod['stock_base_total'], 2) . "</td>
                 <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>" . number_format($prod['stock_minimo'], 2) . "</td>
             </tr>";
         }
@@ -148,7 +148,7 @@ try {
             <thead>
                 <tr style='background-color: #f8f9fa;'>
                     <th style='padding: 8px; border: 1px solid #dee2e6; text-align: left;'>Producto</th>
-                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Stock Actual</th>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Stock Base Total</th>
                     <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Mínimo Requerido</th>
                 </tr>
             </thead>
