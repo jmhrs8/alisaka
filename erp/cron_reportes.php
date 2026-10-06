@@ -87,7 +87,7 @@ try {
     $stmtV->execute($params);
     $resVentas = $stmtV->fetch(PDO::FETCH_ASSOC);
 
-    $numVentas         = intval($resVentas['total_num'] ?? 0);
+    $numVentas        = intval($resVentas['total_num'] ?? 0);
     $montoTotalVentas = floatval($resVentas['monto'] ?? 0);
 
     // B. Total Cobrado vs Pendiente (CxC)
@@ -125,50 +125,97 @@ try {
 
     $asunto = "Informe General y Alertas ERP ALISAKA (" . ucfirst($frecuencia) . ") - " . date('d/m/Y');
 
-    // Filas para Productos con Stock Bajo
-    $htmlStock = "";
+    // Tabla Productos con Stock Bajo
     if (empty($productosStockBajo)) {
-        $htmlStock = "<tr><td colspan='3' style='padding: 8px; text-align: center; color: #198754;'>Todo el inventario está en niveles óptimos.</td></tr>";
+        $htmlStockTabla = "<div style='padding: 12px; background-color: #f8f9fa; text-align: center; color: #198754; border: 1px solid #dee2e6; border-radius: 4px;'>Todo el inventario está en niveles óptimos.</div>";
     } else {
+        $rowsStock = "";
         foreach ($productosStockBajo as $prod) {
-            $htmlStock .= "<tr>
+            $rowsStock .= "<tr>
                 <td style='padding: 8px; border: 1px solid #dee2e6;'>" . htmlspecialchars($prod['nombre']) . "</td>
-                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;'>" . $prod['stock'] . "</td>
-                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>" . $prod['stock_minimo'] . "</td>
+                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;'>" . number_format($prod['stock'], 0) . "</td>
+                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>" . number_format($prod['stock_minimo'], 0) . "</td>
             </tr>";
         }
+        $htmlStockTabla = "
+        <table style='width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;'>
+            <thead>
+                <tr style='background-color: #f8f9fa;'>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: left;'>Producto</th>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Stock Actual</th>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Mínimo Requerido</th>
+                </tr>
+            </thead>
+            <tbody>$rowsStock</tbody>
+        </table>";
     }
 
-    // Filas para Cuentas Por Cobrar por Vencer
-    $htmlCxC = "";
+    // Tabla Cuentas Por Cobrar
     if (empty($cxcPorVencer)) {
-        $htmlCxC = "<tr><td colspan='3' style='padding: 8px; text-align: center; color: #6c757d;'>No hay cobros pendientes registrados.</td></tr>";
+        $htmlCxCTabla = "<div style='padding: 12px; background-color: #f8f9fa; text-align: center; color: #6c757d; border: 1px solid #dee2e6; border-radius: 4px;'>No hay cobros pendientes registrados.</div>";
     } else {
+        $rowsCxC = "";
         foreach ($cxcPorVencer as $cxc) {
-            $dias = (strtotime($cxc['fecha_vencimiento']) - strtotime($hoy)) / 86400;
-            $alerta = $dias < 0 ? "<span style='color:red;'>(Vencido)</span>" : "($dias días)";
-            $htmlCxC .= "<tr>
+            $fechaRaw = $cxc['fecha_vencimiento'] ?? null;
+            if ($fechaRaw && $fechaRaw !== '0000-00-00') {
+                $dias = (strtotime($fechaRaw) - strtotime($hoy)) / 86400;
+                $alerta = $dias < 0 ? "<span style='color:red;'>(Vencido)</span>" : "($dias días)";
+                $fechaTexto = date('d/m/Y', strtotime($fechaRaw)) . " $alerta";
+            } else {
+                $fechaTexto = "<span style='color:#6c757d;'>Sin fecha definida</span>";
+            }
+
+            $rowsCxC .= "<tr>
                 <td style='padding: 8px; border: 1px solid #dee2e6;'>" . htmlspecialchars($cxc['cliente']) . "</td>
                 <td style='padding: 8px; border: 1px solid #dee2e6; text-align: right; font-weight: bold;'>$" . number_format($cxc['monto'], 2) . "</td>
-                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>" . date('d/m/Y', strtotime($cxc['fecha_vencimiento'])) . " $alerta</td>
+                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>$fechaTexto</td>
             </tr>";
         }
+        $htmlCxCTabla = "
+        <table style='width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;'>
+            <thead>
+                <tr style='background-color: #f8f9fa;'>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: left;'>Cliente</th>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: right;'>Monto</th>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Fecha Vencimiento</th>
+                </tr>
+            </thead>
+            <tbody>$rowsCxC</tbody>
+        </table>";
     }
 
-    // Filas para Cuentas Por Pagar por Vencer
-    $htmlCxP = "";
+    // Tabla Cuentas Por Pagar
     if (empty($cxpPorVencer)) {
-        $htmlCxP = "<tr><td colspan='3' style='padding: 8px; text-align: center; color: #6c757d;'>No hay pasivos pendientes de pago.</td></tr>";
+        $htmlCxPTabla = "<div style='padding: 12px; background-color: #f8f9fa; text-align: center; color: #6c757d; border: 1px solid #dee2e6; border-radius: 4px;'>No hay pasivos pendientes de pago.</div>";
     } else {
+        $rowsCxP = "";
         foreach ($cxpPorVencer as $cxp) {
-            $dias = (strtotime($cxp['fecha_vencimiento']) - strtotime($hoy)) / 86400;
-            $alerta = $dias < 0 ? "<span style='color:red;'>(Vencido)</span>" : "($dias días)";
-            $htmlCxP .= "<tr>
+            $fechaRaw = $cxp['fecha_vencimiento'] ?? null;
+            if ($fechaRaw && $fechaRaw !== '0000-00-00') {
+                $dias = (strtotime($fechaRaw) - strtotime($hoy)) / 86400;
+                $alerta = $dias < 0 ? "<span style='color:red;'>(Vencido)</span>" : "($dias días)";
+                $fechaTexto = date('d/m/Y', strtotime($fechaRaw)) . " $alerta";
+            } else {
+                $fechaTexto = "<span style='color:#6c757d;'>Sin fecha definida</span>";
+            }
+
+            $rowsCxP .= "<tr>
                 <td style='padding: 8px; border: 1px solid #dee2e6;'>" . htmlspecialchars($cxp['proveedor'] ?? 'Proveedor General') . "</td>
                 <td style='padding: 8px; border: 1px solid #dee2e6; text-align: right; font-weight: bold;'>$" . number_format($cxp['monto'], 2) . "</td>
-                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>" . date('d/m/Y', strtotime($cxp['fecha_vencimiento'])) . " $alerta</td>
+                <td style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>$fechaTexto</td>
             </tr>";
         }
+        $htmlCxPTabla = "
+        <table style='width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;'>
+            <thead>
+                <tr style='background-color: #f8f9fa;'>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: left;'>Proveedor</th>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: right;'>Monto</th>
+                    <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Fecha Vencimiento</th>
+                </tr>
+            </thead>
+            <tbody>$rowsCxP</tbody>
+        </table>";
     }
 
     // Cuerpo Completo HTML
@@ -207,40 +254,13 @@ try {
             </table>
 
             <h3 style='color: #dc3545; border-bottom: 2px solid #dc3545; padding-bottom: 5px; margin-top: 25px;'>2. Alerta de Stock Bajo / Agotado</h3>
-            <table style='width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;'>
-                <thead>
-                    <tr style='background-color: #f8f9fa;'>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: left;'>Producto</th>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Stock Actual</th>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Mínimo Requerido</th>
-                    </tr>
-                </thead>
-                <tbody>$htmlStock</tbody>
-            </table>
+            $htmlStockTabla
 
             <h3 style='color: #ffc107; border-bottom: 2px solid #ffc107; padding-bottom: 5px; margin-top: 25px;'>3. Próximos Cobros Pendientes (Clientes)</h3>
-            <table style='width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;'>
-                <thead>
-                    <tr style='background-color: #f8f9fa;'>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: left;'>Cliente</th>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: right;'>Monto</th>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Fecha Vencimiento</th>
-                    </tr>
-                </thead>
-                <tbody>$htmlCxC</tbody>
-            </table>
+            $htmlCxCTabla
 
             <h3 style='color: #6c757d; border-bottom: 2px solid #6c757d; padding-bottom: 5px; margin-top: 25px;'>4. Próximos Pagos Pendientes (Proveedores)</h3>
-            <table style='width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;'>
-                <thead>
-                    <tr style='background-color: #f8f9fa;'>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: left;'>Proveedor</th>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: right;'>Monto</th>
-                        <th style='padding: 8px; border: 1px solid #dee2e6; text-align: center;'>Fecha Vencimiento</th>
-                    </tr>
-                </thead>
-                <tbody>$htmlCxP</tbody>
-            </table>
+            $htmlCxPTabla
 
             <p style='font-size: 12px; color: #888; text-align: center; margin-top: 30px; border-top: 1px solid #eee; padding-top: 15px;'>
                 Mensaje generado de forma automática por el sistema ERP ALISAKA.<br>Fecha de emisión: " . date('d/m/Y H:i:s') . "
