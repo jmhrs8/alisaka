@@ -1,22 +1,8 @@
 <?php
 session_start();
 
-// Incluir la conexión global a la base de datos si existe
-if (file_exists('includes/db.php')) {
-    require_once 'includes/db.php';
-}
-
-// Conexión fallback usando PDO si $pdo no está definida
-if (!isset($pdo)) {
-    try {
-        $pdo = new PDO("mysql:host=localhost;dbname=erp_db;charset=utf8mb4", "usuario", "password", [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-        ]);
-    } catch (Exception $e) {
-        die("Error de conexión: " . $e->getMessage());
-    }
-}
+// Carga directa de la conexión oficial
+require_once __DIR__ . '/config/db.php';
 
 $id = intval($_GET['id'] ?? 0);
 
@@ -24,16 +10,16 @@ if ($id <= 0) {
     die("ID de venta/salida no válido.");
 }
 
-// 1. Obtener la información general de la venta/salida
+// 1. Obtener la información general de la salida
 $stmt = $pdo->prepare("SELECT * FROM salidas WHERE id = ?");
 $stmt->execute([$id]);
 $venta = $stmt->fetch();
 
 if (!$venta) {
-    die("La nota o salida solicitada no existe.");
+    die("La nota o salida #{$id} no existe en la base de datos.");
 }
 
-// 2. Obtener el detalle de los productos pertenecientes a esta salida
+// 2. Obtener los productos de esta salida
 $stmtDetalle = $pdo->prepare("
     SELECT ds.*, p.nombre AS producto_nombre 
     FROM detalle_salidas ds
@@ -43,7 +29,7 @@ $stmtDetalle = $pdo->prepare("
 $stmtDetalle->execute([$id]);
 $detalles = $stmtDetalle->fetchAll();
 
-// Datos calculados de la cabecera
+// 3. Cálculos de importes
 $subtotal = floatval($venta['subtotal'] ?? 0);
 $iva = floatval($venta['iva'] ?? 0);
 $total = floatval($venta['total'] ?? $venta['monto_total'] ?? 0);
@@ -198,7 +184,6 @@ $fecha = !empty($venta['fecha']) ? date('d/m/Y H:i', strtotime($venta['fecha']))
 
 <div class="ticket-container">
     <div class="header">
-        <!-- Logo de ALISAKA -->
         <img src="assets/img/ALISAKA.JPG" alt="ALISAKA Logo" class="logo" onerror="this.style.display='none'">
         <div class="empresa-title">ALISAKA</div>
         <div class="nota-title">COMPROBANTE DE VENTA / SALIDA</div>
@@ -235,7 +220,6 @@ $fecha = !empty($venta['fecha']) ? date('d/m/Y H:i', strtotime($venta['fecha']))
                     </tr>
                 <?php endforeach; ?>
             <?php else: ?>
-                <!-- Fallback en caso de no existir registros en detalle_salidas -->
                 <tr>
                     <td class="text-center">#<?= htmlspecialchars($venta['producto_id'] ?? '1') ?></td>
                     <td><?= htmlspecialchars($venta['concepto'] ?? $venta['producto_nombre'] ?? 'Venta General') ?></td>
