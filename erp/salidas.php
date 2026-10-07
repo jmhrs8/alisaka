@@ -1,7 +1,7 @@
 <?php
 require_once 'includes/header.php';
 
-// Asegurar que PDO lance excepciones para evitar pantallas en blanco silenciosas
+// Asegurar que PDO lance excepciones
 if (isset($pdo)) {
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 }
@@ -9,27 +9,27 @@ if (isset($pdo)) {
 $mensajeExito = '';
 $mensajeError = '';
 
-// Obtener ID del usuario en sesión
 $usuarioId = $_SESSION['user_id'] ?? $_SESSION['usuario_id'] ?? 1;
 
 // 1. REGISTRAR NUEVA SALIDA / VENTA
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
     $productoId       = intval($_POST['producto_id'] ?? 0);
     $clienteNombre    = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
-    $cantidad         = floatval($_POST['cantidad'] ?? 0);
-    $precioVenta      = floatval($_POST['precio_venta'] ?? 0);
-    $estadoCobro      = $_POST['estado_cobro'] ?? 'cobrado'; // cobrado | credito
+    $modalidadVenta   = $_POST['modalidad_venta'] ?? 'unidad'; // 'unidad' o 'empaque'
+    $cantidadIngresada = floatval($_POST['cantidad'] ?? 0);
+    $precioIngresado  = floatval($_POST['precio_venta'] ?? 0);
+    $estadoCobro      = $_POST['estado_cobro'] ?? 'cobrado';
     $fechaVencimiento = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
     $metodoCobro      = $_POST['metodo_cobro'] ?? 'efectivo';
     $requiereFactura  = isset($_POST['requiere_factura']) ? 1 : 0;
     $facturaUrl       = null;
 
-    if ($productoId > 0 && $cantidad > 0 && $precioVenta >= 0) {
+    if ($productoId > 0 && $cantidadIngresada > 0 && $precioIngresado >= 0) {
         try {
             $pdo->beginTransaction();
 
-            // Verificar existencias usando stock_actual
-            $stmtP = $pdo->prepare("SELECT id, nombre, stock_actual FROM productos WHERE id = ? FOR UPDATE");
+            // Consultar datos del producto e información de empaque
+            $stmtP = $pdo->prepare("SELECT id, nombre, stock_actual, tipo_unidad, unidades_por_empaque FROM productos WHERE id = ? FOR UPDATE");
             $stmtP->execute([$productoId]);
             $producto = $stmtP->fetch(PDO::FETCH_ASSOC);
 
@@ -37,10 +37,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 throw new Exception("El producto seleccionado no existe.");
             }
 
+            $unidadesPorEmpaque = floatval($producto['unidades_por_empaque'] ?? 1);
+            if ($unidadesPorEmpaque <= 0) $unidadesPorEmpaque = 1;
+
+            // Calcular cantidad real a descontar del inventario base
+            if ($modalidadVenta === 'empaque') {
+                $cantidadBaseDescontar = $cantidadIngresada * $unidadesPorEmpaque;
+                $precioUnitarioBase   = $precioIngresado / $unidadesPorEmpaque;
+            } else {
+                $cantidadBaseDescontar = $cantidadIngresada;
+                $precioUnitarioBase   = $precioIngresado;
+            }
+
             $stockDisponible = floatval($producto['stock_actual'] ?? 0);
 
-            if ($stockDisponible < $cantidad) {
-                throw new Exception("Stock insuficiente. Disponible: " . number_format($stockDisponible, 2));
+            if ($stockDisponible < $cantidadBaseDescontar) {
+                throw new Exception("Stock insuficiente. Disponible: " . number_format($stockDisponible, 2) . " unidades base.");
             }
 
             // Subida de comprobante
@@ -59,11 +71,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 }
             }
 
-            // --- LÓGICA DE CÁLCULO DE IVA Y TOTAL ---
-            $subtotal = $cantidad * $precioVenta;
+            // Cálculo de totales
+            $subtotal = $cantidadIngresada * $precioIngresado;
             $iva = $requiereFactura ? ($subtotal * 0.16) : 0.00;
             $total = $subtotal + $iva;
-
             $tipoPago = ($estadoCobro === 'credito') ? 'credito' : 'contado';
 
             // Insertar encabezado de Salida
@@ -90,23 +101,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
 
             $salidaId = $pdo->lastInsertId();
 
-            // Insertar en detalle_salidas
+            // Insertar en detalle_salidas (desglosando la venta base)
             $stmtDet = $pdo->prepare("INSERT INTO detalle_salidas
                 (salida_id, producto_id, cantidad, precio_unitario, subtotal)
                 VALUES (?, ?, ?, ?, ?)");
             $stmtDet->execute([
                 $salidaId,
                 $productoId,
-                $cantidad,
-                $precioVenta,
+                $cantidadBaseDescontar,
+                $precioUnitarioBase,
                 $subtotal
             ]);
 
-            // Descontar inventario de la columna stock_actual
+            // Descontar inventario base real
             $stmtUpdStk = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
-            $stmtUpdStk->execute([$cantidad, $productoId]);
+            $stmtUpdStk->execute([$cantidadBaseDescontar, $productoId]);
 
-            // Registrar en INGRESOS con los nombres exactos de la tabla
+            // Registrar en INGRESOS
             if ($estadoCobro === 'cobrado') {
                 $conceptoIngreso = "Venta / Salida #" . $salidaId . " - " . $producto['nombre'] . " (" . $clienteNombre . ")" . ($requiereFactura ? " [Facturado 16% IVA]" : "");
 
@@ -118,8 +129,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                     $salidaId,
                     $usuarioId,
                     $productoId,
-                    $cantidad,
-                    $precioVenta,
+                    $cantidadBaseDescontar,
+                    $precioUnitarioBase,
                     $conceptoIngreso,
                     $subtotal,
                     $iva,
@@ -129,7 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 ]);
             }
 
-            // Registrar en CUENTAS_COBRAR con la estructura real de la tabla
+            // Registrar en CUENTAS_COBRAR
             if ($estadoCobro === 'credito') {
                 $stmtCxC = $pdo->prepare("INSERT INTO cuentas_cobrar
                     (salida_id, cliente, monto, estatus, fecha_vencimiento, fecha_emision)
@@ -144,7 +155,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
             }
 
             $pdo->commit();
-            $mensajeExito = "Salida / Venta #" . $salidaId . " registrada exitosamente. Total cobrado/registrado: $" . number_format($total, 2);
+            $mensajeExito = "Salida / Venta #" . $salidaId . " registrada exitosamente. Total: $" . number_format($total, 2);
         } catch (Exception $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -172,7 +183,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
         try {
             $pdo->beginTransaction();
 
-            // Obtener detalle actual
             $stmtDetActual = $pdo->prepare("SELECT producto_id, cantidad FROM detalle_salidas WHERE salida_id = ? FOR UPDATE");
             $stmtDetActual->execute([$salidaId]);
             $detalleActual = $stmtDetActual->fetch(PDO::FETCH_ASSOC);
@@ -182,7 +192,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
                 $cantidadAnterior = floatval($detalleActual['cantidad']);
                 $diferenciaCant   = $nuevaCantidad - $cantidadAnterior;
 
-                // Verificar stock si incrementó la cantidad
                 if ($diferenciaCant > 0) {
                     $stmtStk = $pdo->prepare("SELECT stock_actual FROM productos WHERE id = ? FOR UPDATE");
                     $stmtStk->execute([$productoId]);
@@ -193,11 +202,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
                     }
                 }
 
-                // Actualizar inventario según la diferencia
                 $stmtAdjStk = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
                 $stmtAdjStk->execute([$diferenciaCant, $productoId]);
 
-                // Actualizar detalle_salidas
                 $subtotalNuevo = $nuevaCantidad * $nuevoPrecio;
                 $stmtUpdDet = $pdo->prepare("UPDATE detalle_salidas SET cantidad = ?, precio_unitario = ?, subtotal = ? WHERE salida_id = ?");
                 $stmtUpdDet->execute([$nuevaCantidad, $nuevoPrecio, $subtotalNuevo, $salidaId]);
@@ -205,12 +212,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
                 $subtotalNuevo = $nuevaCantidad * $nuevoPrecio;
             }
 
-            // Calcular totales
             $ivaNuevo   = $requiereFactura ? ($subtotalNuevo * 0.16) : 0.00;
             $totalNuevo = $subtotalNuevo + $ivaNuevo;
             $tipoPago   = ($estadoCobro === 'credito') ? 'credito' : 'contado';
 
-            // Manejo de archivo/comprobante
             $sqlComprobante = "";
             $paramsComprobante = [];
 
@@ -224,7 +229,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
                         mkdir($dirSubida, 0777, true);
                     }
 
-                    // Borrar anterior si existe
                     $stmtFile = $pdo->prepare("SELECT factura_url FROM salidas WHERE id = ?");
                     $stmtFile->execute([$salidaId]);
                     $oldFile = $stmtFile->fetchColumn();
@@ -241,34 +245,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
                 }
             }
 
-            // Actualizar encabezado de Salida
             $sqlSalida = "UPDATE salidas SET
-                cliente = ?,
-                subtotal = ?,
-                iva = ?,
-                total = ?,
-                monto_total = ?,
-                estado_cobro = ?,
-                fecha_vencimiento = ?,
-                metodo_cobro = ?,
-                requiere_factura = ?,
-                con_factura = ?,
-                tipo_pago = ?,
-                metodo_pago = ?";
+                cliente = ?, subtotal = ?, iva = ?, total = ?, monto_total = ?, estado_cobro = ?,
+                fecha_vencimiento = ?, metodo_cobro = ?, requiere_factura = ?, con_factura = ?,
+                tipo_pago = ?, metodo_pago = ?";
 
             $paramsSalida = [
-                $clienteNombre,
-                $subtotalNuevo,
-                $ivaNuevo,
-                $totalNuevo,
-                $totalNuevo,
-                $estadoCobro,
-                $fechaVencimiento,
-                $metodoCobro,
-                $requiereFactura,
-                $requiereFactura,
-                $tipoPago,
-                $metodoCobro
+                $clienteNombre, $subtotalNuevo, $ivaNuevo, $totalNuevo, $totalNuevo,
+                $estadoCobro, $fechaVencimiento, $metodoCobro, $requiereFactura, $requiereFactura,
+                $tipoPago, $metodoCobro
             ];
 
             if (!empty($fecha)) {
@@ -308,7 +293,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salid
         try {
             $pdo->beginTransaction();
 
-            // 1. Reintegrar stock de los productos de la salida
             $stmtDet = $pdo->prepare("SELECT producto_id, cantidad FROM detalle_salidas WHERE salida_id = ?");
             $stmtDet->execute([$salidaId]);
             $detalles = $stmtDet->fetchAll(PDO::FETCH_ASSOC);
@@ -318,7 +302,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salid
                 $stmtRestaurar->execute([$item['cantidad'], $item['producto_id']]);
             }
 
-            // 2. Eliminar archivo adjunto si existe
             $stmtImg = $pdo->prepare("SELECT factura_url FROM salidas WHERE id = ?");
             $stmtImg->execute([$salidaId]);
             $archivo = $stmtImg->fetchColumn();
@@ -327,11 +310,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salid
                 @unlink(__DIR__ . '/' . $archivo);
             }
 
-            // 3. Eliminar registros vinculados en ingresos si existen
             $stmtDelIng = $pdo->prepare("DELETE FROM ingresos WHERE salida_id = ?");
             $stmtDelIng->execute([$salidaId]);
 
-            // 4. Eliminar detalle y registro de salida
             $stmtDelDet = $pdo->prepare("DELETE FROM detalle_salidas WHERE salida_id = ?");
             $stmtDelDet->execute([$salidaId]);
 
@@ -349,10 +330,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salid
     }
 }
 
-// Cargar Catálogo de Productos
+// Cargar Catálogo de Productos con Unidades y Conversión de Empaques
 $productos = [];
 try {
-    $stmtProd = $pdo->query("SELECT id, nombre, stock_actual, tipo_unidad, precio_venta FROM productos ORDER BY nombre ASC");
+    $stmtProd = $pdo->query("SELECT id, nombre, stock_actual, tipo_unidad, unidades_por_empaque, precio_venta FROM productos ORDER BY nombre ASC");
     if ($stmtProd) {
         $productos = $stmtProd->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -376,7 +357,7 @@ try {
     $mensajeError = "Error al consultar historial de salidas: " . $e->getMessage();
 }
 
-// LÓGICA DE DETECCIÓN DE ALERTAS DE COBRO DE CRÉDITOS VENCIDOS / PRÓXIMOS
+// Alertas de Cobro
 $alertasVencidas = [];
 $alertasPorVencer = [];
 $fechaHoy = date('Y-m-d');
@@ -393,11 +374,14 @@ foreach ($salidas as $s) {
 }
 ?>
 
+<!-- Librería html2pdf para descarga directa en PDF del ticket previsualizado -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-box-arrow-up-right text-danger me-2"></i> Salidas / Ventas de Producto</h2>
 </div>
 
-<!-- COMPONENTE DE ALERTAS DE CRÉDITO Y COBRO -->
+<!-- ALERTAS DE CRÉDITO Y COBRO -->
 <?php if (!empty($alertasVencidas)): ?>
     <div class="alert alert-danger shadow-sm border-2 border-danger alert-dismissible fade show" role="alert">
         <h5 class="alert-heading fw-bold mb-2">
@@ -450,7 +434,7 @@ foreach ($salidas as $s) {
     </div>
 <?php endif; ?>
 
-<!-- FORMULARIO REGISTRAR SALIDA -->
+<!-- FORMULARIO REGISTRAR SALIDA CON PREVISUALIZADOR INTEGRADO -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-dark text-white fw-bold">
         <i class="bi bi-dash-circle me-1"></i> Registrar Nueva Salida
@@ -459,109 +443,180 @@ foreach ($salidas as $s) {
         <form method="POST" action="salidas.php" enctype="multipart/form-data" class="row g-3">
             <input type="hidden" name="guardar_salida" value="1">
 
-            <div class="col-md-3">
-                <label class="form-label fw-bold">Producto (*):</label>
-                <select name="producto_id" id="select_producto" class="form-select" required>
-                    <option value="" data-precio="" data-stock="0" data-unidad="">-- Seleccionar Producto --</option>
-                    <?php if (!empty($productos)): ?>
-                        <?php foreach ($productos as $p): ?>
-                            <option value="<?= htmlspecialchars($p['id']) ?>"
-                                    data-precio="<?= htmlspecialchars($p['precio_venta'] ?? 0) ?>"
-                                    data-stock="<?= htmlspecialchars($p['stock_actual'] ?? 0) ?>"
-                                    data-unidad="<?= htmlspecialchars($p['tipo_unidad'] ?? 'unidades') ?>">
-                                <?= htmlspecialchars($p['nombre']) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    <?php else: ?>
-                        <option value="" disabled>No hay productos disponibles</option>
-                    <?php endif; ?>
-                </select>
+            <!-- LADO IZQUIERDO: FORMULARIO DE CAPTURA -->
+            <div class="col-lg-7 row g-3 m-0 p-0 pe-lg-3 border-end">
+                <div class="col-md-6">
+                    <label class="form-label fw-bold">Producto (*):</label>
+                    <select name="producto_id" id="select_producto" class="form-select" required>
+                        <option value="" data-precio="" data-stock="0" data-unidad="Pieza" data-empaque="1">-- Seleccionar Producto --</option>
+                        <?php if (!empty($productos)): ?>
+                            <?php foreach ($productos as $p): ?>
+                                <option value="<?= htmlspecialchars($p['id']) ?>"
+                                        data-nombre="<?= htmlspecialchars($p['nombre']) ?>"
+                                        data-precio="<?= htmlspecialchars($p['precio_venta'] ?? 0) ?>"
+                                        data-stock="<?= htmlspecialchars($p['stock_actual'] ?? 0) ?>"
+                                        data-unidad="<?= htmlspecialchars($p['tipo_unidad'] ?? 'Pieza') ?>"
+                                        data-empaque="<?= htmlspecialchars($p['unidades_por_empaque'] ?? 1) ?>">
+                                    <?= htmlspecialchars($p['nombre']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </select>
 
-                <!-- TARJETA VISUAL DE STOCK Y DETALLES -->
-                <div id="card_info_stock" class="card mt-2 d-none border-primary bg-light">
-                    <div class="card-body p-2 text-center">
-                        <small class="text-muted d-block fw-bold mb-1">DISPONIBILIDAD EN ALMACÉN</small>
-                        <span id="badge_stock_status" class="badge bg-success fs-6 mb-1">
-                            <i class="bi bi-boxes me-1"></i> <span id="lbl_stock_cant">0</span> <span id="lbl_stock_unidad"></span>
-                        </span>
-                        <div class="small text-muted">
-                            Precio Base: <strong id="lbl_stock_precio" class="text-dark">$0.00</strong>
+                    <div id="card_info_stock" class="card mt-2 d-none border-primary bg-light">
+                        <div class="card-body p-2 text-center">
+                            <small class="text-muted d-block fw-bold mb-1">DISPONIBILIDAD EN ALMACÉN</small>
+                            <span id="badge_stock_status" class="badge bg-success fs-6 mb-1">
+                                <i class="bi bi-boxes me-1"></i> <span id="lbl_stock_cant">0</span> <span id="lbl_stock_unidad"></span>
+                            </span>
+                            <div class="small text-muted">
+                                Precio Base Unitario: <strong id="lbl_stock_precio" class="text-dark">$0.00</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <label class="form-label fw-bold">Cliente:</label>
+                    <input type="text" name="cliente" id="input_cliente" class="form-control" placeholder="Público General / Mostrador">
+                </div>
+
+                <!-- SELECTOR DE MODALIDAD DE VENTA -->
+                <div class="col-md-6">
+                    <label class="form-label fw-bold text-primary"><i class="bi bi-aspect-ratio me-1"></i> Modulo / Forma de Venta (*):</label>
+                    <select name="modalidad_venta" id="select_modalidad_venta" class="form-select border-primary fw-bold">
+                        <option value="unidad">Por Unidad / Pieza Individual</option>
+                        <option value="empaque" id="opt_empaque">Por Empaque Completo (Caja / Millar)</option>
+                    </select>
+                </div>
+
+                <div class="col-md-3">
+                    <label class="form-label fw-bold" id="lbl_input_cantidad">Cantidad (*):</label>
+                    <input type="number" step="0.01" min="0.01" name="cantidad" id="input_cantidad" class="form-control" placeholder="0.00" required>
+                </div>
+
+                <div class="col-md-3">
+                    <label class="form-label fw-bold" id="lbl_input_precio">Precio ($) (*):</label>
+                    <input type="number" step="0.01" min="0" name="precio_venta" id="input_precio_venta" class="form-control" placeholder="0.00" required>
+                </div>
+
+                <div class="col-md-6">
+                    <label class="form-label fw-bold">Estatus del Cobro (*):</label>
+                    <select name="estado_cobro" id="select_estado_cobro" class="form-select" required>
+                        <option value="cobrado">Cobrado (Contado)</option>
+                        <option value="credito">A Crédito (Manda a CxC)</option>
+                    </select>
+                </div>
+
+                <div class="col-md-6 d-none" id="div_fecha_vencimiento">
+                    <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Vencimiento Crédito (*):</label>
+                    <input type="date" name="fecha_vencimiento" id="input_fecha_vencimiento" class="form-control border-danger">
+                </div>
+
+                <div class="col-md-6">
+                    <label class="form-label fw-bold">Método de Cobro:</label>
+                    <select name="metodo_cobro" id="select_metodo_cobro" class="form-select">
+                        <option value="efectivo">Efectivo</option>
+                        <option value="transferencia">Transferencia</option>
+                        <option value="tarjeta">Tarjeta</option>
+                    </select>
+                </div>
+
+                <div class="col-md-6">
+                    <label class="form-label fw-bold">Comprobante Adjunto:</label>
+                    <input type="file" name="comprobante" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.webp,.xml">
+                </div>
+
+                <div class="col-12 mt-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="requiere_factura" id="requiere_factura" value="1">
+                        <label class="form-check-label fw-bold" for="requiere_factura">
+                            ¿Requiere Factura (+16% IVA)?
+                        </label>
+                    </div>
+                </div>
+
+                <!-- TOTALES EN TIEMPO REAL -->
+                <div class="col-12 bg-light p-3 rounded border mt-3">
+                    <div class="row text-center">
+                        <div class="col-4">
+                            <span class="text-muted d-block small">Subtotal:</span>
+                            <strong id="lbl_subtotal" class="fs-6">$0.00</strong>
+                        </div>
+                        <div class="col-4">
+                            <span class="text-muted d-block small">IVA (16%):</span>
+                            <strong id="lbl_iva" class="fs-6 text-warning">$0.00</strong>
+                        </div>
+                        <div class="col-4">
+                            <span class="text-muted d-block small">Total Final:</span>
+                            <strong id="lbl_total" class="fs-5 text-success">$0.00</strong>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="col-md-3">
-                <label class="form-label fw-bold">Cliente:</label>
-                <input type="text" name="cliente" class="form-control" placeholder="Público General / Mostrador">
-            </div>
-
-            <div class="col-md-2">
-                <label class="form-label fw-bold">Cantidad (*):</label>
-                <input type="number" step="0.01" min="0.01" name="cantidad" id="input_cantidad" class="form-control" placeholder="0.00" required>
-            </div>
-
-            <div class="col-md-2">
-                <label class="form-label fw-bold">Precio Venta ($) (*):</label>
-                <input type="number" step="0.01" min="0" name="precio_venta" id="input_precio_venta" class="form-control" placeholder="0.00" required>
-            </div>
-
-            <div class="col-md-2">
-                <label class="form-label fw-bold">Estatus del Cobro (*):</label>
-                <select name="estado_cobro" id="select_estado_cobro" class="form-select" required>
-                    <option value="cobrado">Cobrado (Contado)</option>
-                    <option value="credito">A Crédito (Manda a CxC)</option>
-                </select>
-            </div>
-
-            <div class="col-md-3 d-none" id="div_fecha_vencimiento">
-                <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Vencimiento de Crédito (*):</label>
-                <input type="date" name="fecha_vencimiento" id="input_fecha_vencimiento" class="form-control border-danger">
-            </div>
-
-            <div class="col-md-3">
-                <label class="form-label fw-bold">Método de Cobro:</label>
-                <select name="metodo_cobro" class="form-select">
-                    <option value="efectivo">Efectivo</option>
-                    <option value="transferencia">Transferencia</option>
-                    <option value="tarjeta">Tarjeta</option>
-                </select>
-            </div>
-
-            <div class="col-md-3">
-                <label class="form-label fw-bold">Comprobante / Ticket (PDF/XML/Imagen):</label>
-                <input type="file" name="comprobante" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.webp,.xml">
-            </div>
-
-            <div class="col-md-3 d-flex align-items-center mt-4">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" name="requiere_factura" id="requiere_factura" value="1">
-                    <label class="form-check-label fw-bold" for="requiere_factura">
-                        ¿Requiere Factura (+16% IVA)?
-                    </label>
+            <!-- LADO DERECHO: PREVISUALIZADOR DE TICKET EN TIEMPO REAL (ÁREA AMARILLA) -->
+            <div class="col-lg-5 d-flex flex-column align-items-center justify-content-between p-3 bg-light rounded border">
+                <div class="w-100 text-center mb-2">
+                    <span class="badge bg-dark text-white uppercase px-3 py-2"><i class="bi bi-eye me-1"></i> Vista Previa de Ticket Térmico</span>
                 </div>
-            </div>
 
-            <!-- Previsualización de Totales en Tiempo Real -->
-            <div class="col-12 bg-light p-3 rounded border">
-                <div class="row text-center">
-                    <div class="col-md-4">
-                        <span class="text-muted d-block">Subtotal:</span>
-                        <strong id="lbl_subtotal" class="fs-5">$0.00</strong>
+                <!-- CONTENEDOR DEL TICKET EN VIVO (Formato 80mm) -->
+                <div id="ticket_preview_container" style="width: 280px; background: #fff; padding: 15px; border: 1px solid #ccc; font-family: 'Courier New', Courier, monospace; font-size: 0.8rem; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);">
+                    <div class="text-center border-bottom pb-2 mb-2">
+                        <strong style="font-size: 1rem; display: block;">PLASTICOS ALISAKA</strong>
+                        <small>Ticket de Venta / Salida</small>
                     </div>
-                    <div class="col-md-4">
-                        <span class="text-muted d-block">IVA (16%):</span>
-                        <strong id="lbl_iva" class="fs-5 text-warning">$0.00</strong>
+                    <div style="font-size: 0.75rem; margin-bottom: 8px;">
+                        <div><strong>Fecha:</strong> <span id="pv_fecha"><?= date('d/m/Y H:i') ?></span></div>
+                        <div><strong>Cliente:</strong> <span id="pv_cliente">Público General</span></div>
+                        <div><strong>Pago:</strong> <span id="pv_pago">Efectivo (Cobrado)</span></div>
                     </div>
-                    <div class="col-md-4">
-                        <span class="text-muted d-block">Total Final:</span>
-                        <strong id="lbl_total" class="fs-4 text-success">$0.00</strong>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.75rem; margin-bottom: 8px;">
+                        <thead>
+                            <tr style="border-bottom: 1px dashed #000;">
+                                <th style="text-align: left;">Cant/Prod</th>
+                                <th style="text-align: right;">P.U.</th>
+                                <th style="text-align: right;">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="3" id="pv_producto" style="padding-top: 4px; font-weight: bold;">-- Selecciona producto --</td>
+                            </tr>
+                            <tr style="border-bottom: 1px dashed #ccc;">
+                                <td id="pv_cant" style="padding-bottom: 4px;">0.00</td>
+                                <td id="pv_pu" style="text-align: right; padding-bottom: 4px;">$0.00</td>
+                                <td id="pv_importe" style="text-align: right; padding-bottom: 4px;">$0.00</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div style="font-size: 0.8rem; text-align: right;">
+                        <div>Subtotal: <span id="pv_subtotal">$0.00</span></div>
+                        <div>IVA (16%): <span id="pv_iva">$0.00</span></div>
+                        <div style="font-weight: bold; font-size: 0.9rem; margin-top: 4px; border-top: 1px dashed #000; padding-top: 4px;">
+                            TOTAL: <span id="pv_total">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="text-center mt-3 pt-2 border-top" style="font-size: 0.65rem; color: #555;">
+                        ¡Gracias por su compra!<br>PLASTICOS ALISAKA
                     </div>
                 </div>
-            </div>
 
-            <div class="col-12 text-end">
-                <button type="submit" class="btn btn-danger"><i class="bi bi-box-arrow-up-right me-1"></i> Guardar Salida</button>
+                <!-- ACCIONES Y BOTÓN DE GUARDAR SALIDA -->
+                <div class="w-100 mt-3 d-flex flex-column gap-2">
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-dark btn-sm w-50 fw-bold" onclick="imprimirVistaPrevia()">
+                            <i class="bi bi-printer me-1"></i> Imprimir Ticket
+                        </button>
+                        <button type="button" class="btn btn-outline-danger btn-sm w-50 fw-bold" onclick="descargarTicketPDF()">
+                            <i class="bi bi-file-earmark-pdf me-1"></i> Descargar PDF
+                        </button>
+                    </div>
+                    <button type="submit" class="btn btn-danger btn-lg fw-bold w-100">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> Guardar Salida
+                    </button>
+                </div>
             </div>
         </form>
     </div>
@@ -581,7 +636,7 @@ foreach ($salidas as $s) {
                         <th>Fecha</th>
                         <th>Producto</th>
                         <th>Cliente</th>
-                        <th class="text-end">Cant.</th>
+                        <th class="text-end">Cant. Base</th>
                         <th class="text-end">Precio U.</th>
                         <th class="text-end">Subtotal</th>
                         <th class="text-end">IVA</th>
@@ -604,7 +659,6 @@ foreach ($salidas as $s) {
                                 $totalMostrar = floatval($s['total'] ?? $s['monto_total'] ?? 0);
                                 $metodo = $s['metodo_cobro'] ?? $s['metodo_pago'] ?? 'efectivo';
 
-                                // Evaluación de Fecha de Vencimiento
                                 $vencimientoTexto = '-';
                                 $badgeVencimiento = 'secondary';
                                 if (($s['estado_cobro'] ?? '') === 'credito' && !empty($s['fecha_vencimiento'])) {
@@ -657,12 +711,9 @@ foreach ($salidas as $s) {
                                 </td>
                                 <td class="text-center">
                                     <div class="btn-group btn-group-sm">
-                                        <!-- Botón Imprimir Nota con Confirmación de Impresión -->
-                                        <button type="button" class="btn btn-outline-info" title="Imprimir Ticket de Compra" onclick="confirmarEImprimirTicket(<?= $s['id'] ?>)">
+                                        <a href="ticket_salida.php?id=<?= $s['id'] ?>" target="_blank" class="btn btn-outline-info" title="Imprimir Ticket">
                                             <i class="bi bi-receipt"></i>
-                                        </button>
-
-                                        <!-- Botón Editar -->
+                                        </a>
                                         <button type="button" class="btn btn-outline-warning"
                                                 data-bs-toggle="modal"
                                                 data-bs-target="#modalEditarSalida"
@@ -679,7 +730,6 @@ foreach ($salidas as $s) {
                                             <i class="bi bi-pencil-square"></i>
                                         </button>
 
-                                        <!-- Botón Eliminar -->
                                         <form method="POST" action="salidas.php" class="d-inline" onsubmit="return confirm('¿Confirmas eliminar esta salida #<?= $s['id'] ?>? Las cantidades vendidas regresarán al inventario.');">
                                             <input type="hidden" name="accion_eliminar_salida" value="1">
                                             <input type="hidden" name="salida_id" value="<?= $s['id'] ?>">
@@ -698,7 +748,7 @@ foreach ($salidas as $s) {
     </div>
 </div>
 
-<!-- MODAL PARA EDITAR SALIDA -->
+<!-- MODAL EDITAR SALIDA -->
 <div class="modal fade" id="modalEditarSalida" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -708,7 +758,7 @@ foreach ($salidas as $s) {
 
                 <div class="modal-header bg-warning text-dark">
                     <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square me-2"></i> Editar Registro de Salida / Venta</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
 
                 <div class="modal-body row g-3">
@@ -760,9 +810,8 @@ foreach ($salidas as $s) {
                     </div>
 
                     <div class="col-12">
-                        <label class="form-label fw-bold">Adjuntar / Reemplazar Comprobante / Ticket:</label>
+                        <label class="form-label fw-bold">Adjuntar / Reemplazar Comprobante:</label>
                         <input type="file" name="comprobante" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.webp,.xml">
-                        <small class="text-muted">Acepta archivos PDF, XML, JPG, PNG o WEBP.</small>
                     </div>
 
                     <div class="col-12">
@@ -785,23 +834,40 @@ foreach ($salidas as $s) {
 </div>
 
 <script>
-// Función para confirmar e imprimir ticket emergente de ancho reducido
-function confirmarEImprimirTicket(idSalida) {
-    if (confirm("¿Deseas imprimir el ticket de esta salida?")) {
-        // Abre una ventana emergente del tamaño ideal para impresoras térmicas de tickets (80mm/58mm)
-        window.open('ticket_salida.php?id=' + idSalida, '_blank', 'width=420,height=600,scrollbars=yes,resizable=yes');
-    }
-}
-
 document.addEventListener('DOMContentLoaded', function() {
     const selectProducto   = document.getElementById('select_producto');
+    const selectModalidad  = document.getElementById('select_modalidad_venta');
+    const optEmpaque       = document.getElementById('opt_empaque');
     const inputPrecio      = document.getElementById('input_precio_venta');
     const inputCantidad    = document.getElementById('input_cantidad');
+    const inputCliente     = document.getElementById('input_cliente');
     const chkFactura       = document.getElementById('requiere_factura');
 
     const selectEstadoCobro = document.getElementById('select_estado_cobro');
+    const selectMetodoCobro = document.getElementById('select_metodo_cobro');
     const divVencimiento    = document.getElementById('div_fecha_vencimiento');
     const inputVencimiento  = document.getElementById('input_fecha_vencimiento');
+
+    const cardStock        = document.getElementById('card_info_stock');
+    const badgeStockStatus = document.getElementById('badge_stock_status');
+    const lblStockCant     = document.getElementById('lbl_stock_cant');
+    const lblStockUnidad   = document.getElementById('lbl_stock_unidad');
+    const lblStockPrecio   = document.getElementById('lbl_stock_precio');
+
+    const lblSubtotal      = document.getElementById('lbl_subtotal');
+    const lblIva           = document.getElementById('lbl_iva');
+    const lblTotal         = document.getElementById('lbl_total');
+
+    // Elementos de la previsualización del ticket en tiempo real
+    const pvCliente  = document.getElementById('pv_cliente');
+    const pvPago     = document.getElementById('pv_pago');
+    const pvProducto = document.getElementById('pv_producto');
+    const pvCant     = document.getElementById('pv_cant');
+    const pvPu       = document.getElementById('pv_pu');
+    const pvImporte  = document.getElementById('pv_importe');
+    const pvSubtotal = document.getElementById('pv_subtotal');
+    const pvIva      = document.getElementById('pv_iva');
+    const pvTotal    = document.getElementById('pv_total');
 
     function toggleVencimiento() {
         if (selectEstadoCobro && selectEstadoCobro.value === 'credito') {
@@ -818,16 +884,6 @@ document.addEventListener('DOMContentLoaded', function() {
         selectEstadoCobro.addEventListener('change', toggleVencimiento);
     }
 
-    const cardStock        = document.getElementById('card_info_stock');
-    const badgeStockStatus = document.getElementById('badge_stock_status');
-    const lblStockCant     = document.getElementById('lbl_stock_cant');
-    const lblStockUnidad   = document.getElementById('lbl_stock_unidad');
-    const lblStockPrecio   = document.getElementById('lbl_stock_precio');
-
-    const lblSubtotal      = document.getElementById('lbl_subtotal');
-    const lblIva           = document.getElementById('lbl_iva');
-    const lblTotal         = document.getElementById('lbl_total');
-
     function calcularTotales() {
         const cantidad        = parseFloat(inputCantidad.value) || 0;
         const precio          = parseFloat(inputPrecio.value) || 0;
@@ -837,25 +893,76 @@ document.addEventListener('DOMContentLoaded', function() {
         const iva      = requiereFactura ? (subtotal * 0.16) : 0;
         const total    = subtotal + iva;
 
-        lblSubtotal.textContent = '$' + subtotal.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        lblIva.textContent      = '$' + iva.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        lblTotal.textContent    = '$' + total.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const subtotalFmt = '$' + subtotal.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const ivaFmt      = '$' + iva.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const totalFmt    = '$' + total.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        lblSubtotal.textContent = subtotalFmt;
+        lblIva.textContent      = ivaFmt;
+        lblTotal.textContent    = totalFmt;
+
+        // Actualizar vista previa del Ticket en vivo
+        const selectedOption = selectProducto.options[selectProducto.selectedIndex];
+        const prodNombre = selectedOption ? (selectedOption.getAttribute('data-nombre') || '-- Selecciona producto --') : '-- Selecciona producto --';
+        const clienteTxt = inputCliente.value.trim() !== '' ? inputCliente.value.trim() : 'Público General';
+        const metodoTxt  = selectMetodoCobro.options[selectMetodoCobro.selectedIndex].text + (selectEstadoCobro.value === 'credito' ? ' (Crédito)' : ' (Cobrado)');
+
+        pvCliente.textContent  = clienteTxt;
+        pvPago.textContent     = metodoTxt;
+        pvProducto.textContent = prodNombre;
+        pvCant.textContent     = cantidad.toFixed(2);
+        pvPu.textContent       = '$' + precio.toFixed(2);
+        pvImporte.textContent  = subtotalFmt;
+        pvSubtotal.textContent = subtotalFmt;
+        pvIva.textContent      = ivaFmt;
+        pvTotal.textContent    = totalFmt;
+    }
+
+    function actualizarModalidadVenta() {
+        const selectedOption = selectProducto.options[selectProducto.selectedIndex];
+        if (!selectedOption || selectProducto.value === "") return;
+
+        const precioBase = parseFloat(selectedOption.getAttribute('data-precio') || 0);
+        const tipoUnidad = selectedOption.getAttribute('data-unidad') || 'Pieza';
+        const empaque    = parseFloat(selectedOption.getAttribute('data-empaque') || 1);
+
+        if (selectModalidad.value === 'empaque') {
+            // Precio calculado para la presentación completa
+            const precioEmpaque = precioBase * empaque;
+            inputPrecio.value = precioEmpaque.toFixed(2);
+            document.getElementById('lbl_input_cantidad').textContent = `Cantidad (${tipoUnidad}s) (*):`;
+            document.getElementById('lbl_input_precio').textContent   = `Precio / ${tipoUnidad} ($) (*):`;
+        } else {
+            inputPrecio.value = precioBase.toFixed(2);
+            document.getElementById('lbl_input_cantidad').textContent = "Cantidad (Unidades) (*):";
+            document.getElementById('lbl_input_precio').textContent   = "Precio Unitario ($) (*):";
+        }
+
+        calcularTotales();
     }
 
     if (selectProducto) {
         selectProducto.addEventListener('change', function() {
             const selectedOption = this.options[this.selectedIndex];
-            const precio = selectedOption.getAttribute('data-precio');
-            const stock  = parseFloat(selectedOption.getAttribute('data-stock') || 0);
-            const unidad = selectedOption.getAttribute('data-unidad') || '';
+            const precioBase = selectedOption.getAttribute('data-precio');
+            const stock      = parseFloat(selectedOption.getAttribute('data-stock') || 0);
+            const unidad     = selectedOption.getAttribute('data-unidad') || 'Pieza';
+            const empaque    = parseFloat(selectedOption.getAttribute('data-empaque') || 1);
 
             if (this.value !== "") {
-                inputPrecio.value = precio ? parseFloat(precio).toFixed(2) : '0.00';
-
                 cardStock.classList.remove('d-none');
                 lblStockCant.textContent   = stock.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-                lblStockUnidad.textContent = unidad;
-                lblStockPrecio.textContent = '$' + (precio ? parseFloat(precio).toFixed(2) : '0.00');
+                lblStockUnidad.textContent = 'unids base';
+                lblStockPrecio.textContent = '$' + (precioBase ? parseFloat(precioBase).toFixed(2) : '0.00');
+
+                if (empaque > 1) {
+                    optEmpaque.textContent = `Por ${unidad} Completo (${empaque} unids)`;
+                    optEmpaque.disabled = false;
+                } else {
+                    optEmpaque.textContent = "Por Empaque Completo (N/A)";
+                    optEmpaque.disabled = true;
+                    selectModalidad.value = 'unidad';
+                }
 
                 if (stock <= 0) {
                     badgeStockStatus.className = 'badge bg-danger fs-6 mb-1';
@@ -864,19 +971,25 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else {
                     badgeStockStatus.className = 'badge bg-success fs-6 mb-1';
                 }
+
+                actualizarModalidadVenta();
             } else {
                 cardStock.classList.add('d-none');
                 inputPrecio.value = '';
+                calcularTotales();
             }
-
-            calcularTotales();
         });
     }
 
-    if (inputCantidad) inputCantidad.addEventListener('input', calcularTotales);
-    if (inputPrecio)   inputPrecio.addEventListener('input', calcularTotales);
-    if (chkFactura)    chkFactura.addEventListener('change', calcularTotales);
+    if (selectModalidad)  selectModalidad.addEventListener('change', actualizarModalidadVenta);
+    if (inputCantidad)    inputCantidad.addEventListener('input', calcularTotales);
+    if (inputPrecio)      inputPrecio.addEventListener('input', calcularTotales);
+    if (inputCliente)     inputCliente.addEventListener('input', calcularTotales);
+    if (chkFactura)       chkFactura.addEventListener('change', calcularTotales);
+    if (selectEstadoCobro) selectEstadoCobro.addEventListener('change', calcularTotales);
+    if (selectMetodoCobro) selectMetodoCobro.addEventListener('change', calcularTotales);
 
+    // Modal Editar Salida
     var modalEditar = document.getElementById('modalEditarSalida');
     const editEstadoCobro  = document.getElementById('edit_estado_cobro');
     const editDivVenc      = document.getElementById('edit_div_vencimiento');
@@ -917,6 +1030,34 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// Función para imprimir la vista previa del ticket
+function imprimirVistaPrevia() {
+    const contenido = document.getElementById('ticket_preview_container').outerHTML;
+    const ventana = window.open('', '_blank', 'width=400,height=600');
+    ventana.document.write('<html><head><title>Imprimir Ticket</title>');
+    ventana.document.write('<style>body { font-family: monospace; display: flex; justify-content: center; padding: 10px; }</style>');
+    ventana.document.write('</head><body>');
+    ventana.document.write(contenido);
+    ventana.document.write('</body></html>');
+    ventana.document.close();
+    ventana.focus();
+    ventana.print();
+    ventana.close();
+}
+
+// Función para descargar la vista previa en formato PDF
+function descargarTicketPDF() {
+    const elemento = document.getElementById('ticket_preview_container');
+    const opciones = {
+        margin:       5,
+        filename:     'ticket_previo_alisaka.pdf',
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2 },
+        jsPDF:        { unit: 'mm', format: [80, 150], orientation: 'portrait' }
+    };
+    html2pdf().set(opciones).from(elemento).save();
+}
 </script>
 
 <?php require_once 'includes/footer.php'; ?>
