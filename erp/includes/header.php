@@ -15,11 +15,9 @@ $paginaActual = basename($_SERVER['PHP_SELF']);
 
 // Matriz de permisos por módulo/archivo PHP
 $permisos = [
-    // Módulos para Cajero / Ventas
+    // Módulos Exclusivos de Cajero / Ventas
     'salidas.php'        => ['admin', 'cajero'],
     'ticket_salida.php'  => ['admin', 'cajero'],
-    'ingresos.php'       => ['admin', 'cajero'],
-    'cuentas_cobrar.php' => ['admin', 'cajero'],
 
     // Módulos para Encargado de Almacén / Bodega
     'inventario.php'     => ['admin', 'almacen'],
@@ -28,13 +26,15 @@ $permisos = [
     'egresos.php'        => ['admin', 'almacen'],
     'cuentas_pagar.php'  => ['admin', 'almacen'],
 
-    // Módulos Exclusivos para Administrador
+    // Módulos Exclusivos para Administrador (Finanzas y Configuración)
+    'ingresos.php'       => ['admin'],
+    'cuentas_cobrar.php' => ['admin'],
     'usuarios.php'       => ['admin'],
     'reportes.php'       => ['admin'],
     'configuracion.php'  => ['admin'],
 
     // Acceso general
-    'index.php'          => ['admin', 'cajero', 'almacen', 'usuario']
+    'index.php'          => ['admin', 'almacen', 'usuario']
 ];
 
 // Validar si la página intentada está restringida para el rol actual
@@ -117,7 +117,7 @@ $bgUrl = !empty($empresa['bg_url']) ? $empresa['bg_url'] : '';
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm">
   <div class="container-fluid">
-    <a class="navbar-brand d-flex align-items-center" href="index.php">
+    <a class="navbar-brand d-flex align-items-center" href="<?= $userRol === 'cajero' ? 'salidas.php' : ($userRol === 'almacen' ? 'inventario.php' : 'index.php') ?>">
       <?php if (!empty($empresa['logo_url']) && file_exists(__DIR__ . '/../' . $empresa['logo_url'])): ?>
         <img src="<?= htmlspecialchars($empresa['logo_url']) ?>" alt="Logo" style="max-height: 35px;" class="me-2">
       <?php endif; ?>
@@ -142,15 +142,15 @@ $bgUrl = !empty($empresa['bg_url']) ? $empresa['bg_url'] : '';
             <li class="nav-item"><a class="nav-link" href="cuentas_pagar.php"><i class="bi bi-credit-card"></i> CxP</a></li>
         <?php endif; ?>
 
-        <!-- MÓDULOS DE CAJERO / VENTAS -->
+        <!-- MÓDULOS EXCLUSIVOS DE CAJERO / VENTAS -->
         <?php if ($userRol === 'admin' || $userRol === 'cajero'): ?>
             <li class="nav-item"><a class="nav-link" href="salidas.php"><i class="bi bi-cart-check text-info"></i> Ventas/Salidas</a></li>
-            <li class="nav-item"><a class="nav-link" href="ingresos.php"><i class="bi bi-cash-coin text-success"></i> Ingresos</a></li>
-            <li class="nav-item"><a class="nav-link" href="cuentas_cobrar.php"><i class="bi bi-receipt"></i> CxC</a></li>
         <?php endif; ?>
 
-        <!-- MÓDULOS DE ADMINISTRADOR -->
+        <!-- MÓDULOS EXCLUSIVOS DE ADMINISTRADOR -->
         <?php if ($userRol === 'admin'): ?>
+            <li class="nav-item"><a class="nav-link" href="ingresos.php"><i class="bi bi-cash-coin text-success"></i> Ingresos</a></li>
+            <li class="nav-item"><a class="nav-link" href="cuentas_cobrar.php"><i class="bi bi-receipt"></i> CxC</a></li>
             <li class="nav-item"><a class="nav-link" href="reportes.php"><i class="bi bi-bar-chart"></i> Reportes</a></li>
             <li class="nav-item"><a class="nav-link" href="usuarios.php"><i class="bi bi-people"></i> Usuarios</a></li>
             <li class="nav-item"><a class="nav-link" href="configuracion.php"><i class="bi bi-gear"></i> Configuración</a></li>
