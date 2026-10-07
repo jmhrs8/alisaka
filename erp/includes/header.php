@@ -1,10 +1,55 @@
 <?php
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-// Control de Acceso: Redirigir a login si no hay sesión
+// 1. Control de Acceso General: Redirigir a login si no hay sesión
 if (!isset($_SESSION['user_id'])) {
     header('Location: login.php');
     exit;
+}
+
+// 2. Control de Acceso Granular por Rol / Privilegios
+$userRol = $_SESSION['user_rol'] ?? 'usuario';
+$paginaActual = basename($_SERVER['PHP_SELF']);
+
+// Matriz de permisos por módulo/archivo PHP
+$permisos = [
+    // Módulos para Cajero / Ventas
+    'salidas.php'        => ['admin', 'cajero'],
+    'ticket_salida.php'  => ['admin', 'cajero'],
+    'ingresos.php'       => ['admin', 'cajero'],
+    'cuentas_cobrar.php' => ['admin', 'cajero'],
+
+    // Módulos para Encargado de Almacén / Bodega
+    'inventario.php'     => ['admin', 'almacen'],
+    'entradas.php'       => ['admin', 'almacen'],
+    'proveedores.php'    => ['admin', 'almacen'],
+    'egresos.php'        => ['admin', 'almacen'],
+    'cuentas_pagar.php'  => ['admin', 'almacen'],
+
+    // Módulos Exclusivos para Administrador
+    'usuarios.php'       => ['admin'],
+    'reportes.php'       => ['admin'],
+    'configuracion.php'  => ['admin'],
+
+    // Acceso general
+    'index.php'          => ['admin', 'cajero', 'almacen', 'usuario']
+];
+
+// Validar si la página intentada está restringida para el rol actual
+if (isset($permisos[$paginaActual])) {
+    if (!in_array($userRol, $permisos[$paginaActual])) {
+        // Redirección de seguridad según rol si intentan ingresar por URL
+        if ($userRol === 'cajero') {
+            header('Location: salidas.php');
+        } elseif ($userRol === 'almacen') {
+            header('Location: inventario.php');
+        } else {
+            header('Location: index.php');
+        }
+        exit;
+    }
 }
 
 require_once __DIR__ . '/../config/config.php';
@@ -83,23 +128,41 @@ $bgUrl = !empty($empresa['bg_url']) ? $empresa['bg_url'] : '';
     </button>
     <div class="collapse navbar-collapse" id="navbarNav">
       <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-        <li class="nav-item"><a class="nav-link" href="index.php"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
-        <li class="nav-item"><a class="nav-link" href="inventario.php"><i class="bi bi-box-seam"></i> Inventario</a></li>
-        <li class="nav-item"><a class="nav-link" href="proveedores.php"><i class="bi bi-truck text-warning"></i> Proveedores</a></li>
-        <li class="nav-item"><a class="nav-link" href="entradas.php"><i class="bi bi-box-arrow-in-down text-success"></i> Resustir/Producto</a></li>
-        <li class="nav-item"><a class="nav-link" href="salidas.php"><i class="bi bi-cart-check text-info"></i> Ventas/Salidas</a></li>
-        <li class="nav-item"><a class="nav-link" href="ingresos.php"><i class="bi bi-cash-coin text-success"></i> Ingresos</a></li>
-        <li class="nav-item"><a class="nav-link" href="egresos.php"><i class="bi bi-wallet2 text-danger"></i> Egresos</a></li>
-        <li class="nav-item"><a class="nav-link" href="cuentas_pagar.php"><i class="bi bi-credit-card"></i> CxP</a></li>
-        <li class="nav-item"><a class="nav-link" href="cuentas_cobrar.php"><i class="bi bi-receipt"></i> CxC</a></li>
-        <li class="nav-item"><a class="nav-link" href="reportes.php"><i class="bi bi-bar-chart"></i> Reportes</a></li>
-        <?php if (isset($_SESSION['user_rol']) && $_SESSION['user_rol'] === 'admin'): ?>
+        
+        <?php if ($userRol === 'admin'): ?>
+            <li class="nav-item"><a class="nav-link" href="index.php"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
+        <?php endif; ?>
+
+        <!-- MÓDULOS DE ALMACÉN / BODEGA -->
+        <?php if ($userRol === 'admin' || $userRol === 'almacen'): ?>
+            <li class="nav-item"><a class="nav-link" href="inventario.php"><i class="bi bi-box-seam"></i> Inventario</a></li>
+            <li class="nav-item"><a class="nav-link" href="proveedores.php"><i class="bi bi-truck text-warning"></i> Proveedores</a></li>
+            <li class="nav-item"><a class="nav-link" href="entradas.php"><i class="bi bi-box-arrow-in-down text-success"></i> Resurtir/Producto</a></li>
+            <li class="nav-item"><a class="nav-link" href="egresos.php"><i class="bi bi-wallet2 text-danger"></i> Egresos</a></li>
+            <li class="nav-item"><a class="nav-link" href="cuentas_pagar.php"><i class="bi bi-credit-card"></i> CxP</a></li>
+        <?php endif; ?>
+
+        <!-- MÓDULOS DE CAJERO / VENTAS -->
+        <?php if ($userRol === 'admin' || $userRol === 'cajero'): ?>
+            <li class="nav-item"><a class="nav-link" href="salidas.php"><i class="bi bi-cart-check text-info"></i> Ventas/Salidas</a></li>
+            <li class="nav-item"><a class="nav-link" href="ingresos.php"><i class="bi bi-cash-coin text-success"></i> Ingresos</a></li>
+            <li class="nav-item"><a class="nav-link" href="cuentas_cobrar.php"><i class="bi bi-receipt"></i> CxC</a></li>
+        <?php endif; ?>
+
+        <!-- MÓDULOS DE ADMINISTRADOR -->
+        <?php if ($userRol === 'admin'): ?>
+            <li class="nav-item"><a class="nav-link" href="reportes.php"><i class="bi bi-bar-chart"></i> Reportes</a></li>
             <li class="nav-item"><a class="nav-link" href="usuarios.php"><i class="bi bi-people"></i> Usuarios</a></li>
             <li class="nav-item"><a class="nav-link" href="configuracion.php"><i class="bi bi-gear"></i> Configuración</a></li>
         <?php endif; ?>
+
       </ul>
       <div class="d-flex align-items-center text-white">
-        <span class="me-3"><i class="bi bi-person-circle"></i> <?= htmlspecialchars($_SESSION['user_nombre'] ?? 'Usuario') ?></span>
+        <span class="me-3">
+            <i class="bi bi-person-circle"></i> 
+            <?= htmlspecialchars($_SESSION['user_nombre'] ?? 'Usuario') ?> 
+            <small class="badge bg-secondary ms-1"><?= strtoupper($userRol) ?></small>
+        </span>
         <a href="logout.php" class="btn btn-outline-light btn-sm"><i class="bi bi-box-arrow-right"></i> Salir</a>
       </div>
     </div>
