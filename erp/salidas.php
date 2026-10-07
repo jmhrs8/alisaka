@@ -657,10 +657,10 @@ foreach ($salidas as $s) {
                                 </td>
                                 <td class="text-center">
                                     <div class="btn-group btn-group-sm">
-                                        <!-- Botón Imprimir Nota -->
-                                        <a href="ticket_salida.php?id=<?= $s['id'] ?>" target="_blank" class="btn btn-outline-info" title="Imprimir Nota de Compra">
+                                        <!-- Botón Imprimir Nota con Confirmación de Impresión -->
+                                        <button type="button" class="btn btn-outline-info" title="Imprimir Ticket de Compra" onclick="confirmarEImprimirTicket(<?= $s['id'] ?>)">
                                             <i class="bi bi-receipt"></i>
-                                        </a>
+                                        </button>
 
                                         <!-- Botón Editar -->
                                         <button type="button" class="btn btn-outline-warning"
@@ -785,6 +785,14 @@ foreach ($salidas as $s) {
 </div>
 
 <script>
+// Función para confirmar e imprimir ticket emergente de ancho reducido
+function confirmarEImprimirTicket(idSalida) {
+    if (confirm("¿Deseas imprimir el ticket de esta salida?")) {
+        // Abre una ventana emergente del tamaño ideal para impresoras térmicas de tickets (80mm/58mm)
+        window.open('ticket_salida.php?id=' + idSalida, '_blank', 'width=420,height=600,scrollbars=yes,resizable=yes');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const selectProducto   = document.getElementById('select_producto');
     const inputPrecio      = document.getElementById('input_precio_venta');
