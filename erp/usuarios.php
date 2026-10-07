@@ -90,6 +90,9 @@ $usuarios = $pdo->query("SELECT id, nombre, email, rol, creado_en FROM usuarios 
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-people-fill text-primary me-2"></i> Gestión de Usuarios y Permisos</h2>
+    <button type="button" class="btn btn-primary fw-bold" data-bs-toggle="modal" data-bs-target="#modalCrearUsuario">
+        <i class="bi bi-person-plus-fill me-1"></i> + Nuevo Usuario
+    </button>
 </div>
 
 <?php if ($mensaje): ?>
@@ -106,33 +109,106 @@ $usuarios = $pdo->query("SELECT id, nombre, email, rol, creado_en FROM usuarios 
     </div>
 <?php endif; ?>
 
-<div class="row">
-    <!-- REGISTRO DE NUEVO USUARIO -->
-    <div class="col-md-4 mb-4">
-        <div class="card shadow-sm border-0">
-            <div class="card-header bg-primary text-white fw-bold">
-                <i class="bi bi-person-plus-fill me-1"></i> Agregar Nuevo Usuario
-            </div>
-            <div class="card-body">
-                <form method="POST" action="usuarios.php">
-                    <input type="hidden" name="crear_usuario" value="1">
-                    
-                    <div class="mb-3">
+<!-- LISTADO DE USUARIOS REGISTRADOS -->
+<div class="card shadow-sm border-0">
+    <div class="card-header bg-dark text-white fw-bold">
+        <i class="bi bi-shield-lock me-1"></i> Usuarios del Sistema
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover align-middle mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th>ID</th>
+                        <th>Nombre</th>
+                        <th>Email</th>
+                        <th>Rol / Privilegio</th>
+                        <th>Registro</th>
+                        <th class="text-center">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($usuarios as $u): ?>
+                        <?php
+                            $rolBadge = 'bg-secondary';
+                            $rolNombre = 'USUARIO';
+
+                            switch ($u['rol']) {
+                                case 'admin':
+                                    $rolBadge = 'bg-danger';
+                                    $rolNombre = 'ADMINISTRADOR';
+                                    break;
+                                case 'cajero':
+                                    $rolBadge = 'bg-success';
+                                    $rolNombre = 'CAJERO / VENTAS';
+                                    break;
+                                case 'almacen':
+                                    $rolBadge = 'bg-warning text-dark';
+                                    $rolNombre = 'ALMACÉN / BODEGA';
+                                    break;
+                            }
+
+                            $myId = $_SESSION['user_id'] ?? $_SESSION['usuario_id'] ?? 0;
+                        ?>
+                        <tr>
+                            <td>#<?= $u['id'] ?></td>
+                            <td class="fw-bold"><?= htmlspecialchars($u['nombre']) ?></td>
+                            <td><?= htmlspecialchars($u['email']) ?></td>
+                            <td><span class="badge <?= $rolBadge ?>"><?= $rolNombre ?></span></td>
+                            <td class="small text-muted"><?= date('d/m/Y H:i', strtotime($u['creado_en'])) ?></td>
+                            <td class="text-center">
+                                <button type="button" class="btn btn-sm btn-outline-warning me-1"
+                                        onclick='abrirModalEditarUsuario(<?= json_encode($u, JSON_HEX_APOS | JSON_HEX_QUOT) ?>)'>
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+
+                                <?php if ($u['id'] !== $myId): ?>
+                                    <a href="usuarios.php?eliminar=<?= $u['id'] ?>"
+                                       onclick="return confirm('¿Confirma eliminar a este usuario del sistema?');"
+                                       class="btn btn-sm btn-outline-danger">
+                                        <i class="bi bi-trash"></i>
+                                    </a>
+                                <?php else: ?>
+                                    <span class="badge bg-light text-dark border">En línea</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL PARA CREAR NUEVO USUARIO -->
+<div class="modal fade" id="modalCrearUsuario" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="usuarios.php">
+                <input type="hidden" name="crear_usuario" value="1">
+
+                <div class="modal-header bg-primary text-white">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-person-plus-fill me-2"></i> Registrar Nuevo Usuario</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+
+                <div class="modal-body row g-3">
+                    <div class="col-12">
                         <label class="form-label fw-bold">Nombre Completo (*):</label>
                         <input type="text" name="nombre" class="form-control" placeholder="Ej. Ana María López" required>
                     </div>
 
-                    <div class="mb-3">
+                    <div class="col-12">
                         <label class="form-label fw-bold">Correo Electrónico (*):</label>
                         <input type="email" name="email" class="form-control" placeholder="caja@alisaka.com" required>
                     </div>
 
-                    <div class="mb-3">
+                    <div class="col-12">
                         <label class="form-label fw-bold">Contraseña (*):</label>
                         <input type="password" name="password" class="form-control" required>
                     </div>
 
-                    <div class="mb-3">
+                    <div class="col-12">
                         <label class="form-label fw-bold">Rol / Privilegio de Acceso (*):</label>
                         <select name="rol" class="form-select border-primary fw-bold" required>
                             <option value="cajero">🛒 Cajero / Ventas (Solo Salidas e Ingresos)</option>
@@ -140,87 +216,14 @@ $usuarios = $pdo->query("SELECT id, nombre, email, rol, creado_en FROM usuarios 
                             <option value="admin">🔑 Administrador (Acceso Total)</option>
                             <option value="usuario">👁️ Usuario Estándar (Lectura General)</option>
                         </select>
-                        <small class="text-muted d-block mt-1">El rol define las pantallas visibles en el menú principal.</small>
                     </div>
-
-                    <button type="submit" class="btn btn-success w-100 fw-bold">
-                        <i class="bi bi-check-lg me-1"></i> Guardar Usuario
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- LISTADO DE USUARIOS REGISTRADOS -->
-    <div class="col-md-8">
-        <div class="card shadow-sm border-0">
-            <div class="card-header bg-dark text-white fw-bold">
-                <i class="bi bi-shield-lock me-1"></i> Usuarios del Sistema
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover align-middle mb-0">
-                        <thead class="table-dark">
-                            <tr>
-                                <th>ID</th>
-                                <th>Nombre</th>
-                                <th>Email</th>
-                                <th>Rol / Privilegio</th>
-                                <th>Registro</th>
-                                <th class="text-center">Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($usuarios as $u): ?>
-                                <?php
-                                    $rolBadge = 'bg-secondary';
-                                    $rolNombre = 'USUARIO';
-                                    
-                                    switch ($u['rol']) {
-                                        case 'admin':
-                                            $rolBadge = 'bg-danger';
-                                            $rolNombre = 'ADMINISTRADOR';
-                                            break;
-                                        case 'cajero':
-                                            $rolBadge = 'bg-success';
-                                            $rolNombre = 'CAJERO / VENTAS';
-                                            break;
-                                        case 'almacen':
-                                            $rolBadge = 'bg-warning text-dark';
-                                            $rolNombre = 'ALMACÉN / BODEGA';
-                                            break;
-                                    }
-
-                                    $myId = $_SESSION['user_id'] ?? $_SESSION['usuario_id'] ?? 0;
-                                ?>
-                                <tr>
-                                    <td>#<?= $u['id'] ?></td>
-                                    <td class="fw-bold"><?= htmlspecialchars($u['nombre']) ?></td>
-                                    <td><?= htmlspecialchars($u['email']) ?></td>
-                                    <td><span class="badge <?= $rolBadge ?>"><?= $rolNombre ?></span></td>
-                                    <td class="small text-muted"><?= date('d/m/Y H:i', strtotime($u['creado_en'])) ?></td>
-                                    <td class="text-center">
-                                        <button type="button" class="btn btn-sm btn-outline-warning me-1"
-                                                onclick='abrirModalEditarUsuario(<?= json_encode($u, JSON_HEX_APOS | JSON_HEX_QUOT) ?>)'>
-                                            <i class="bi bi-pencil-square"></i>
-                                        </button>
-
-                                        <?php if ($u['id'] !== $myId): ?>
-                                            <a href="usuarios.php?eliminar=<?= $u['id'] ?>" 
-                                               onclick="return confirm('¿Confirma eliminar a este usuario del sistema?');" 
-                                               class="btn btn-sm btn-outline-danger">
-                                                <i class="bi bi-trash"></i>
-                                            </a>
-                                        <?php else: ?>
-                                            <span class="badge bg-light text-dark border">En línea</span>
-                                        <?php endif; ?>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
                 </div>
-            </div>
+
+                <div class="modal-footer bg-light">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-success fw-bold"><i class="bi bi-check-lg me-1"></i> Guardar Usuario</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
