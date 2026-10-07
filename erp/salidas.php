@@ -13,16 +13,16 @@ $usuarioId = $_SESSION['user_id'] ?? $_SESSION['usuario_id'] ?? 1;
 
 // 1. REGISTRAR NUEVA SALIDA / VENTA
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
-    $productoId       = intval($_POST['producto_id'] ?? 0);
-    $clienteNombre    = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
-    $modalidadVenta   = $_POST['modalidad_venta'] ?? 'unidad'; // 'unidad' o 'empaque'
+    $productoId        = intval($_POST['producto_id'] ?? 0);
+    $clienteNombre     = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
+    $modalidadVenta    = $_POST['modalidad_venta'] ?? 'unidad'; // 'unidad' o 'empaque'
     $cantidadIngresada = floatval($_POST['cantidad'] ?? 0);
-    $precioIngresado  = floatval($_POST['precio_venta'] ?? 0);
-    $estadoCobro      = $_POST['estado_cobro'] ?? 'cobrado';
-    $fechaVencimiento = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
-    $metodoCobro      = $_POST['metodo_cobro'] ?? 'efectivo';
-    $requiereFactura  = isset($_POST['requiere_factura']) ? 1 : 0;
-    $facturaUrl       = null;
+    $precioIngresado   = floatval($_POST['precio_venta'] ?? 0);
+    $estadoCobro       = $_POST['estado_cobro'] ?? 'cobrado';
+    $fechaVencimiento  = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
+    $metodoCobro       = $_POST['metodo_cobro'] ?? 'efectivo';
+    $requiereFactura   = isset($_POST['requiere_factura']) ? 1 : 0;
+    $facturaUrl        = null;
 
     if ($productoId > 0 && $cantidadIngresada > 0 && $precioIngresado >= 0) {
         try {
@@ -330,7 +330,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salid
     }
 }
 
-// Cargar Catálogo de Productos con Unidades y Conversión de Empaques
+// Cargar Catálogo de Productos
 $productos = [];
 try {
     $stmtProd = $pdo->query("SELECT id, nombre, stock_actual, tipo_unidad, unidades_por_empaque, precio_venta FROM productos ORDER BY nombre ASC");
@@ -927,7 +927,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const empaque    = parseFloat(selectedOption.getAttribute('data-empaque') || 1);
 
         if (selectModalidad.value === 'empaque') {
-            // Precio calculado para la presentación completa
             const precioEmpaque = precioBase * empaque;
             inputPrecio.value = precioEmpaque.toFixed(2);
             document.getElementById('lbl_input_cantidad').textContent = `Cantidad (${tipoUnidad}s) (*):`;
@@ -981,11 +980,11 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    if (selectModalidad)  selectModalidad.addEventListener('change', actualizarModalidadVenta);
-    if (inputCantidad)    inputCantidad.addEventListener('input', calcularTotales);
-    if (inputPrecio)      inputPrecio.addEventListener('input', calcularTotales);
-    if (inputCliente)     inputCliente.addEventListener('input', calcularTotales);
-    if (chkFactura)       chkFactura.addEventListener('change', calcularTotales);
+    if (selectModalidad)   selectModalidad.addEventListener('change', actualizarModalidadVenta);
+    if (inputCantidad)     inputCantidad.addEventListener('input', calcularTotales);
+    if (inputPrecio)       inputPrecio.addEventListener('input', calcularTotales);
+    if (inputCliente)      inputCliente.addEventListener('input', calcularTotales);
+    if (chkFactura)        chkFactura.addEventListener('change', calcularTotales);
     if (selectEstadoCobro) selectEstadoCobro.addEventListener('change', calcularTotales);
     if (selectMetodoCobro) selectMetodoCobro.addEventListener('change', calcularTotales);
 
@@ -1031,19 +1030,27 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Función para imprimir la vista previa del ticket
+// Función corregida para imprimir la vista previa del ticket
 function imprimirVistaPrevia() {
     const contenido = document.getElementById('ticket_preview_container').outerHTML;
     const ventana = window.open('', '_blank', 'width=400,height=600');
-    ventana.document.write('<html><head><title>Imprimir Ticket</title>');
-    ventana.document.write('<style>body { font-family: monospace; display: flex; justify-content: center; padding: 10px; }</style>');
+    
+    ventana.document.write('<html><head><title>Imprimir Ticket - PLASTICOS ALISAKA</title>');
+    ventana.document.write('<style>');
+    ventana.document.write('body { font-family: "Courier New", Courier, monospace; display: flex; justify-content: center; padding: 10px; margin: 0; }');
+    ventana.document.write('@media print { body { padding: 0; } }');
+    ventana.document.write('</style>');
     ventana.document.write('</head><body>');
     ventana.document.write(contenido);
     ventana.document.write('</body></html>');
     ventana.document.close();
-    ventana.focus();
-    ventana.print();
-    ventana.close();
+
+    // Pausa técnica para permitir que el DOM renderice el ticket antes de invocar la impresión
+    setTimeout(function() {
+        ventana.focus();
+        ventana.print();
+        ventana.close();
+    }, 250);
 }
 
 // Función para descargar la vista previa en formato PDF
