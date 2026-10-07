@@ -51,7 +51,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modificar_usuario']))
                 $stmt->execute([$nombre, $email, $rol, $idEdit]);
             }
 
-            // Si se editó a sí mismo, actualizar sesión activa
             if ($idEdit === ($_SESSION['user_id'] ?? 0)) {
                 $_SESSION['user_rol'] = $rol;
             }
@@ -75,7 +74,7 @@ if (isset($_GET['eliminar'])) {
             header('Location: usuarios.php?msg=deleted');
             exit;
         } catch (\PDOException $e) {
-            $error = "No se puede eliminar el usuario porque tiene registros vinculados (ventas, compras o egresos).";
+            $error = "No se puede eliminar el usuario porque tiene registros vinculados.";
         }
     } else {
         $error = "No puedes eliminar tu propia cuenta en uso.";
