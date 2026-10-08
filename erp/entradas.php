@@ -5,7 +5,12 @@ $mensajeExito = '';
 $mensajeError = '';
 
 $dirFacturas = __DIR__ . '/uploads/facturas_compras/';
-$esAdmin = (($_SESSION['user_rol'] ?? '') === 'admin');
+
+// Evaluamos el rol actual de la sesión
+$userRol = $_SESSION['user_rol'] ?? 'usuario';
+
+// Condicional estricta: Solo el administrador puede eliminar
+$puedeEliminar = ($userRol === 'admin');
 
 // ==========================================
 // 1. REGISTRAR ENTRADA
@@ -213,11 +218,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editar_entrada'])) {
 }
 
 // ==========================================
-// 3. ELIMINAR ENTRADA (SOLO ADMINISTRADOR)
+// 3. ELIMINAR ENTRADA (BLOQUEADO SI ES CAJERO / ALMACEN / USUARIO)
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_entrada'])) {
-    if (!$esAdmin) {
-        $mensajeError = "Acceso denegado. Únicamente los administradores pueden eliminar compras.";
+    if (!$puedeEliminar) {
+        $mensajeError = "Acceso denegado. El rol '{$userRol}' no tiene permisos para eliminar compras.";
     } else {
         $entradaId = intval($_POST['entrada_id'] ?? 0);
 
@@ -237,14 +242,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_entrada'])) 
                     $stmtRestarStock = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
                     $stmtRestarStock->execute([$cantidad, $productoId]);
 
-                    // Eliminar de egresos y de cuentas_pagar vinculados
+                    // Eliminar de egresos y de cuentas_pagar si existieran
                     $pdo->prepare("DELETE FROM egresos WHERE entrada_id = ?")->execute([$entradaId]);
                     $pdo->prepare("DELETE FROM cuentas_pagar WHERE entrada_id = ?")->execute([$entradaId]);
 
-                    // Eliminar registro de entrada
+                    // Eliminar entrada
                     $pdo->prepare("DELETE FROM entradas_inventario WHERE id = ?")->execute([$entradaId]);
 
-                    // Borrar archivo físico si existe
+                    // Borrar archivo
                     if (!empty($entrada['comprobante_url'])) {
                         $rutaArchivo = __DIR__ . '/' . $entrada['comprobante_url'];
                         if (file_exists($rutaArchivo)) {
@@ -253,7 +258,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_entrada'])) 
                     }
 
                     $pdo->commit();
-                    $mensajeExito = "Entrada #{$entradaId} eliminada correctamente por el Administrador.";
+                    $mensajeExito = "Entrada #{$entradaId} eliminada correctamente.";
                 } else {
                     $pdo->rollBack();
                     $mensajeError = "El registro de entrada no existe o ya fue eliminado.";
@@ -450,7 +455,8 @@ try {
                                             <i class="bi bi-pencil"></i>
                                         </button>
 
-                                        <?php if ($esAdmin): ?>
+                                        <!-- CONDICIONAL: SI NO ES ADMIN (VENTAS / ALMACÉN / USUARIO) SE OCULTA EL BOTÓN ELIMINAR -->
+                                        <?php if ($puedeEliminar): ?>
                                             <button class="btn btn-sm btn-outline-danger btn-eliminar"
                                                     data-id="<?= $ent['id'] ?>"
                                                     data-producto="<?= htmlspecialchars($ent['producto_nombre']) ?>"
@@ -531,8 +537,8 @@ try {
     </div>
 </div>
 
-<?php if ($esAdmin): ?>
-<!-- MODAL ELIMINAR ENTRADA (SOLO VISIBLE PARA ADMINISTRADOR) -->
+<!-- MODAL ELIMINAR ENTRADA (SOLO ADMINISTRADOR) -->
+<?php if ($puedeEliminar): ?>
 <div class="modal fade" id="modalEliminarEntrada" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -583,8 +589,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const deleteButtons = document.querySelectorAll('.btn-eliminar');
     deleteButtons.forEach(btn => {
         btn.addEventListener('click', function() {
-            if (document.getElementById('delete_entrada_id')) {
-                document.getElementById('delete_entrada_id').value = this.dataset.id;
+            var elId = document.getElementById('delete_entrada_id');
+            if (elId) {
+                elId.value = this.dataset.id;
                 document.getElementById('delete_producto_nombre').textContent = this.dataset.producto;
                 document.getElementById('delete_cantidad').textContent = this.dataset.cantidad;
             }
