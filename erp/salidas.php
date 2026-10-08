@@ -1,6 +1,10 @@
 <?php
 require_once 'includes/header.php';
 
+// Control de permisos estrictos por rol
+$userRol = $_SESSION['user_rol'] ?? 'usuario';
+$puedeEliminar = ($userRol === 'admin');
+
 // Asegurar que PDO lance excepciones
 if (isset($pdo)) {
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -285,47 +289,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'
     }
 }
 
-// 3. ELIMINAR REGISTRO DE SALIDA / VENTA
+// 3. ELIMINAR REGISTRO DE SALIDA / VENTA (RESTRINGIDO A ADMINISTRADOR)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar_salida'])) {
-    $salidaId = intval($_POST['salida_id'] ?? 0);
+    if (!$puedeEliminar) {
+        $mensajeError = "Acceso denegado. El rol '{$userRol}' no tiene permisos para eliminar salidas o ventas.";
+    } else {
+        $salidaId = intval($_POST['salida_id'] ?? 0);
 
-    if ($salidaId > 0) {
-        try {
-            $pdo->beginTransaction();
+        if ($salidaId > 0) {
+            try {
+                $pdo->beginTransaction();
 
-            $stmtDet = $pdo->prepare("SELECT producto_id, cantidad FROM detalle_salidas WHERE salida_id = ?");
-            $stmtDet->execute([$salidaId]);
-            $detalles = $stmtDet->fetchAll(PDO::FETCH_ASSOC);
+                $stmtDet = $pdo->prepare("SELECT producto_id, cantidad FROM detalle_salidas WHERE salida_id = ?");
+                $stmtDet->execute([$salidaId]);
+                $detalles = $stmtDet->fetchAll(PDO::FETCH_ASSOC);
 
-            $stmtRestaurar = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual + ? WHERE id = ?");
-            foreach ($detalles as $item) {
-                $stmtRestaurar->execute([$item['cantidad'], $item['producto_id']]);
+                $stmtRestaurar = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual + ? WHERE id = ?");
+                foreach ($detalles as $item) {
+                    $stmtRestaurar->execute([$item['cantidad'], $item['producto_id']]);
+                }
+
+                $stmtImg = $pdo->prepare("SELECT factura_url FROM salidas WHERE id = ?");
+                $stmtImg->execute([$salidaId]);
+                $archivo = $stmtImg->fetchColumn();
+
+                if ($archivo && file_exists(__DIR__ . '/' . $archivo)) {
+                    @unlink(__DIR__ . '/' . $archivo);
+                }
+
+                $stmtDelIng = $pdo->prepare("DELETE FROM ingresos WHERE salida_id = ?");
+                $stmtDelIng->execute([$salidaId]);
+
+                $stmtDelDet = $pdo->prepare("DELETE FROM detalle_salidas WHERE salida_id = ?");
+                $stmtDelDet->execute([$salidaId]);
+
+                $stmtDelSal = $pdo->prepare("DELETE FROM salidas WHERE id = ?");
+                $stmtDelSal->execute([$salidaId]);
+
+                $pdo->commit();
+                $mensajeExito = "La salida #{$salidaId} fue eliminada y los productos regresaron al inventario.";
+            } catch (\PDOException $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                $mensajeError = "Error al eliminar la salida: " . $e->getMessage();
             }
-
-            $stmtImg = $pdo->prepare("SELECT factura_url FROM salidas WHERE id = ?");
-            $stmtImg->execute([$salidaId]);
-            $archivo = $stmtImg->fetchColumn();
-
-            if ($archivo && file_exists(__DIR__ . '/' . $archivo)) {
-                @unlink(__DIR__ . '/' . $archivo);
-            }
-
-            $stmtDelIng = $pdo->prepare("DELETE FROM ingresos WHERE salida_id = ?");
-            $stmtDelIng->execute([$salidaId]);
-
-            $stmtDelDet = $pdo->prepare("DELETE FROM detalle_salidas WHERE salida_id = ?");
-            $stmtDelDet->execute([$salidaId]);
-
-            $stmtDelSal = $pdo->prepare("DELETE FROM salidas WHERE id = ?");
-            $stmtDelSal->execute([$salidaId]);
-
-            $pdo->commit();
-            $mensajeExito = "La salida #{$salidaId} fue eliminada y los productos regresaron al inventario.";
-        } catch (\PDOException $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            $mensajeError = "Error al eliminar la salida: " . $e->getMessage();
         }
     }
 }
@@ -730,13 +738,16 @@ foreach ($salidas as $s) {
                                             <i class="bi bi-pencil-square"></i>
                                         </button>
 
-                                        <form method="POST" action="salidas.php" class="d-inline" onsubmit="return confirm('¿Confirmas eliminar esta salida #<?= $s['id'] ?>? Las cantidades vendidas regresarán al inventario.');">
-                                            <input type="hidden" name="accion_eliminar_salida" value="1">
-                                            <input type="hidden" name="salida_id" value="<?= $s['id'] ?>">
-                                            <button type="submit" class="btn btn-outline-danger" title="Eliminar Salida">
-                                                <i class="bi bi-trash"></i>
-                                            </button>
-                                        </form>
+                                        <!-- CONDICIONAL: SOLO EL ADMINISTRADOR PUEDE VER Y EJECUTAR LA ELIMINACIÓN -->
+                                        <?php if ($puedeEliminar): ?>
+                                            <form method="POST" action="salidas.php" class="d-inline" onsubmit="return confirm('¿Confirmas eliminar esta salida #<?= $s['id'] ?>? Las cantidades vendidas regresarán al inventario.');">
+                                                <input type="hidden" name="accion_eliminar_salida" value="1">
+                                                <input type="hidden" name="salida_id" value="<?= $s['id'] ?>">
+                                                <button type="submit" class="btn btn-outline-danger" title="Eliminar Salida">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
                                     </div>
                                 </td>
                             </tr>
@@ -1030,11 +1041,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Función corregida para imprimir la vista previa del ticket
+// Función para imprimir la vista previa del ticket
 function imprimirVistaPrevia() {
     const contenido = document.getElementById('ticket_preview_container').outerHTML;
     const ventana = window.open('', '_blank', 'width=400,height=600');
-    
+
     ventana.document.write('<html><head><title>Imprimir Ticket - PLASTICOS ALISAKA</title>');
     ventana.document.write('<style>');
     ventana.document.write('body { font-family: "Courier New", Courier, monospace; display: flex; justify-content: center; padding: 10px; margin: 0; }');
@@ -1045,7 +1056,6 @@ function imprimirVistaPrevia() {
     ventana.document.write('</body></html>');
     ventana.document.close();
 
-    // Pausa técnica para permitir que el DOM renderice el ticket antes de invocar la impresión
     setTimeout(function() {
         ventana.focus();
         ventana.print();
