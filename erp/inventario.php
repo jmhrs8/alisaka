@@ -1,14 +1,16 @@
 <?php
 require_once 'includes/header.php';
 
+// Control de permisos estrictos por rol
+$userRol = $_SESSION['user_rol'] ?? 'usuario';
+$puedeEliminar = ($userRol === 'admin');
+
 // =========================================================================
 // INCLUSIÓN DE PHPMAILER Y FUNCIÓN DE ALERTA DE STOCK BAJO
 // =========================================================================
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-// Ajusta las rutas según donde tengas guardado PHPMailer
-// Si utilizas Composer, puedes usar: require_once 'vendor/autoload.php';
 if (file_exists('PHPMailer/src/Exception.php')) {
     require_once 'PHPMailer/src/Exception.php';
     require_once 'PHPMailer/src/PHPMailer.php';
@@ -23,26 +25,23 @@ function enviarAlertaStockBajo($codigo, $nombre, $stockActual, $stockMinimo, $ti
     $mail = new PHPMailer(true);
 
     try {
-        // Configuración del servidor SMTP
         $mail->isSMTP();
         $mail->Host       = 'smtp.gmail.com';
         $mail->SMTPAuth   = true;
-        
-        // --- CONFIGURA TUS CREDENCIALES AQUÍ ---
-        $mail->Username   = 'jmhrs8@gmail.com'; 
-        $mail->Password   = 'czyydevgpokxkljm'; // Contraseña de aplicación
-        
+
+        $mail->Username   = 'jmhrs8@gmail.com';
+        $mail->Password   = 'czyydevgpokxkljm';
+
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port       = 587;
 
-        // Destinatarios y asunto
         $mail->setFrom('jmhrs8@gmail.com', 'Sistema ERP - Alerta de Stock bajo favor de resurtir de forma urgente');
-        $mail->addAddress('jmhrs8@gmail.com'); // Correo que recibe la notificación
+        $mail->addAddress('jmhrs8@gmail.com');
 
         $mail->isHTML(true);
         $mail->CharSet = 'UTF-8';
         $mail->Subject = "⚠️ ALERTA: Stock bajo en producto - {$nombre}";
-        
+
         $mail->Body = "
             <div style='font-family: Arial, sans-serif; padding: 20px; border: 1px solid #dc3545; border-radius: 8px;'>
                 <h2 style='color: #dc3545; margin-top:0;'>⚠️ Alerta de Stock Bajo</h2>
@@ -73,30 +72,34 @@ $dirFotos = __DIR__ . '/uploads/productos/';
 $dirFacturas = __DIR__ . '/uploads/facturas_compras/';
 
 // =========================================================================
-// 1. ELIMINAR PRODUCTO
+// 1. ELIMINAR PRODUCTO (RESTRINGIDO A ADMINISTRADOR)
 // =========================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_producto'])) {
-    $idEliminar = intval($_POST['producto_id'] ?? 0);
+    if (!$puedeEliminar) {
+        $mensajeError = "Acceso denegado. El rol '{$userRol}' no tiene permisos para eliminar productos del inventario.";
+    } else {
+        $idEliminar = intval($_POST['producto_id'] ?? 0);
 
-    if ($idEliminar > 0) {
-        try {
-            $stmtImg = $pdo->prepare("SELECT imagen FROM productos WHERE id = ?");
-            $stmtImg->execute([$idEliminar]);
-            $prod = $stmtImg->fetch(PDO::FETCH_ASSOC);
+        if ($idEliminar > 0) {
+            try {
+                $stmtImg = $pdo->prepare("SELECT imagen FROM productos WHERE id = ?");
+                $stmtImg->execute([$idEliminar]);
+                $prod = $stmtImg->fetch(PDO::FETCH_ASSOC);
 
-            if ($prod && !empty($prod['imagen']) && $prod['imagen'] !== 'uploads/productos/default.png') {
-                $fileImg = __DIR__ . '/' . $prod['imagen'];
-                if (file_exists($fileImg)) {
-                    @unlink($fileImg);
+                if ($prod && !empty($prod['imagen']) && $prod['imagen'] !== 'uploads/productos/default.png') {
+                    $fileImg = __DIR__ . '/' . $prod['imagen'];
+                    if (file_exists($fileImg)) {
+                        @unlink($fileImg);
+                    }
                 }
+
+                $stmtDel = $pdo->prepare("DELETE FROM productos WHERE id = ?");
+                $stmtDel->execute([$idEliminar]);
+
+                $mensajeExito = "Producto eliminado correctamente del inventario.";
+            } catch (\PDOException $e) {
+                $mensajeError = "Error al eliminar el producto (puede tener registros asociados en entradas/salidas): " . $e->getMessage();
             }
-
-            $stmtDel = $pdo->prepare("DELETE FROM productos WHERE id = ?");
-            $stmtDel->execute([$idEliminar]);
-
-            $mensajeExito = "Producto eliminado correctamente del inventario.";
-        } catch (\PDOException $e) {
-            $mensajeError = "Error al eliminar el producto (puede tener registros asociados en entradas/salidas): " . $e->getMessage();
         }
     }
 }
@@ -143,7 +146,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modificar_producto'])
             $stmtUp = $pdo->prepare("UPDATE productos SET codigo = ?, nombre = ?, tipo_unidad = ?, unidades_por_empaque = ?, costo_unitario = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?, imagen = ? WHERE id = ?");
             $stmtUp->execute([$codigo, $nombre, $tipoUnidad, $unidadesPorEmpaque, $costoUnitario, $precioVenta, $stockActual, $stockMinimo, $fotoUrl, $idEditar]);
 
-            // EVALUAR SI BAJÓ A NIVEL DE ALERTA DE STOCK BAJO
             if ($stockActual <= $stockMinimo) {
                 enviarAlertaStockBajo($codigo, $nombre, $stockActual, $stockMinimo, $tipoUnidad);
                 $mensajeExito = "Producto '{$nombre}' actualizado. ⚠️ ¡Se ha enviado un correo de alerta por stock bajo!";
@@ -168,8 +170,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
     $unidadesPorEmpaque = floatval($_POST['unidades_por_empaque'] ?? 1);
     $precioVenta        = floatval($_POST['precio_venta'] ?? 0);
     $stockMinimo        = floatval($_POST['stock_minimo'] ?? 5);
-    $costoUnitario      = floatval($_POST['costo_unitario'] ?? 0); 
-    $cantidadEmpaques   = floatval($_POST['stock_inicial'] ?? 0);  
+    $costoUnitario      = floatval($_POST['costo_unitario'] ?? 0);
+    $cantidadEmpaques   = floatval($_POST['stock_inicial'] ?? 0);
 
     if ($unidadesPorEmpaque <= 0) {
         $unidadesPorEmpaque = 1;
@@ -240,7 +242,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_producto_comp
 
             $pdo->commit();
 
-            // EVALUAR SI EL NUEVO PRODUCTO REGISTRA UN STOCK BAJO DESDE SU CREACIÓN
             if ($stockInicialBase <= $stockMinimo) {
                 enviarAlertaStockBajo($codigo, $nombre, $stockInicialBase, $stockMinimo, $tipoUnidad);
                 $mensajeExito = "Producto '{$nombre}' registrado exitosamente. ⚠️ ¡Se envió correo de alerta por stock inicial bajo!";
@@ -336,7 +337,6 @@ try {
                                 </td>
                                 <td>
                                     <div class="fw-bold"><?= $codigoSanitizado ?></div>
-                                    <!-- Canvas para código de barras -->
                                     <canvas id="barcode_<?= $p['id'] ?>" style="max-height: 30px; max-width: 120px;"></canvas>
                                     <div class="mt-1">
                                         <button class="btn btn-sm btn-outline-dark py-0 px-1" style="font-size:0.7rem;" onclick="descargarCodigoBarras('<?= $p['id'] ?>', '<?= $codigoSanitizado ?>')" title="Descargar Código de Barras">
@@ -367,7 +367,7 @@ try {
                                     </small>
                                 </td>
                                 <td class="text-center">
-                                    <?php if ($p['stock_actual'] <= $p['stock_minimo']): ?>
+                                    <?php if ($p['stock_actual'] <=$p['stock_minimo']): ?>
                                         <span class="badge bg-danger">Bajo Stock</span>
                                     <?php else: ?>
                                         <span class="badge bg-success">Óptimo</span>
@@ -379,13 +379,17 @@ try {
                                             title="Editar producto">
                                         <i class="bi bi-pencil-square"></i>
                                     </button>
-                                    <form method="POST" action="inventario.php" class="d-inline" onsubmit="return confirm('¿Está seguro de eliminar este producto del inventario? Esta acción no se puede deshacer.');">
-                                        <input type="hidden" name="eliminar_producto" value="1">
-                                        <input type="hidden" name="producto_id" value="<?= $p['id'] ?>">
-                                        <button type="submit" class="btn btn-sm btn-danger" title="Eliminar producto">
-                                            <i class="bi bi-trash"></i>
-                                        </button>
-                                    </form>
+
+                                    <!-- CONDICIONAL: SOLO EL ADMINISTRADOR VE Y EJECUTA LA ELIMINACIÓN -->
+                                    <?php if ($puedeEliminar): ?>
+                                        <form method="POST" action="inventario.php" class="d-inline" onsubmit="return confirm('¿Está seguro de eliminar este producto del inventario? Esta acción no se puede deshacer.');">
+                                            <input type="hidden" name="eliminar_producto" value="1">
+                                            <input type="hidden" name="producto_id" value="<?= $p['id'] ?>">
+                                            <button type="submit" class="btn btn-sm btn-danger" title="Eliminar producto">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -556,7 +560,7 @@ try {
                             <label class="form-label fw-bold">Proveedor / Razón Social:</label>
                             <select name="proveedor_id" class="form-select">
                                 <option value="">-- Sin Proveedor / Mostrador --</option>
-                                <?php foreach ($proveedores as $prov): ?>
+                                <?php foreach ($proveedores as$prov): ?>
                                     <option value="<?= $prov['id'] ?>"><?= htmlspecialchars($prov['nombre']) ?></option>
                                 <?php endforeach; ?>
                             </select>
@@ -601,7 +605,6 @@ try {
                             <input type="date" name="fecha_vencimiento" class="form-control border-danger">
                         </div>
 
-                        <!-- DESGLOSE DINÁMICO DE TOTALES -->
                         <div class="col-md-12">
                             <div class="p-3 bg-light rounded border">
                                 <div class="row text-center mb-2">
