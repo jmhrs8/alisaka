@@ -5,7 +5,6 @@ $mensajeExito = '';
 $mensajeError = '';
 
 $dirFacturas = __DIR__ . '/uploads/facturas_compras/';
-$esAdmin = (($_SESSION['user_rol'] ?? '') === 'admin');
 
 // ==========================================
 // 1. REGISTRAR ENTRADA
@@ -213,60 +212,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editar_entrada'])) {
 }
 
 // ==========================================
-// 3. ELIMINAR ENTRADA (SOLO ADMINISTRADOR)
+// 3. ELIMINAR ENTRADA
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_entrada'])) {
-    if (!$esAdmin) {
-        $mensajeError = "Acceso denegado. Únicamente los administradores pueden eliminar compras.";
-    } else {
-        $entradaId = intval($_POST['entrada_id'] ?? 0);
+    $entradaId = intval($_POST['entrada_id'] ?? 0);
 
-        if ($entradaId > 0) {
-            try {
-                $pdo->beginTransaction();
+    if ($entradaId > 0) {
+        try {
+            $pdo->beginTransaction();
 
-                $stmtEnt = $pdo->prepare("SELECT producto_id, cantidad, comprobante_url FROM entradas_inventario WHERE id = ? FOR UPDATE");
-                $stmtEnt->execute([$entradaId]);
-                $entrada = $stmtEnt->fetch(PDO::FETCH_ASSOC);
+            $stmtEnt = $pdo->prepare("SELECT producto_id, cantidad, comprobante_url FROM entradas_inventario WHERE id = ? FOR UPDATE");
+            $stmtEnt->execute([$entradaId]);
+            $entrada = $stmtEnt->fetch(PDO::FETCH_ASSOC);
 
-                if ($entrada) {
-                    $productoId = $entrada['producto_id'];
-                    $cantidad   = floatval($entrada['cantidad']);
+            if ($entrada) {
+                $productoId = $entrada['producto_id'];
+                $cantidad   = floatval($entrada['cantidad']);
 
-                    // Descontar del inventario
-                    $stmtRestarStock = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
-                    $stmtRestarStock->execute([$cantidad, $productoId]);
+                // Descontar del inventario
+                $stmtRestarStock = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
+                $stmtRestarStock->execute([$cantidad, $productoId]);
 
-                    // Eliminar de egresos y de cuentas_pagar vinculados
-                    $pdo->prepare("DELETE FROM egresos WHERE entrada_id = ?")->execute([$entradaId]);
-                    $pdo->prepare("DELETE FROM cuentas_pagar WHERE entrada_id = ?")->execute([$entradaId]);
+                // Eliminar de egresos y de cuentas_pagar si existieran
+                $pdo->prepare("DELETE FROM egresos WHERE entrada_id = ?")->execute([$entradaId]);
+                $pdo->prepare("DELETE FROM cuentas_pagar WHERE entrada_id = ?")->execute([$entradaId]);
 
-                    // Eliminar registro de entrada
-                    $pdo->prepare("DELETE FROM entradas_inventario WHERE id = ?")->execute([$entradaId]);
+                // Eliminar entrada
+                $pdo->prepare("DELETE FROM entradas_inventario WHERE id = ?")->execute([$entradaId]);
 
-                    // Borrar archivo físico si existe
-                    if (!empty($entrada['comprobante_url'])) {
-                        $rutaArchivo = __DIR__ . '/' . $entrada['comprobante_url'];
-                        if (file_exists($rutaArchivo)) {
-                            @unlink($rutaArchivo);
-                        }
+                // Borrar archivo
+                if (!empty($entrada['comprobante_url'])) {
+                    $rutaArchivo = __DIR__ . '/' . $entrada['comprobante_url'];
+                    if (file_exists($rutaArchivo)) {
+                        @unlink($rutaArchivo);
                     }
+                }
 
-                    $pdo->commit();
-                    $mensajeExito = "Entrada #{$entradaId} eliminada correctamente por el Administrador.";
-                } else {
-                    $pdo->rollBack();
-                    $mensajeError = "El registro de entrada no existe o ya fue eliminado.";
-                }
-            } catch (\PDOException $e) {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
-                $mensajeError = "Error al eliminar la entrada: " . $e->getMessage();
+                $pdo->commit();
+                $mensajeExito = "Entrada #{$entradaId} eliminada correctamente.";
+            } else {
+                $pdo->rollBack();
+                $mensajeError = "El registro de entrada no existe o ya fue eliminado.";
             }
-        } else {
-            $mensajeError = "ID de entrada no válido.";
+        } catch (\PDOException $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            $mensajeError = "Error al eliminar la entrada: " . $e->getMessage();
         }
+    } else {
+        $mensajeError = "ID de entrada no válido.";
     }
 }
 
@@ -449,16 +444,13 @@ try {
                                                 data-bs-toggle="modal" data-bs-target="#modalEditarEntrada" title="Editar">
                                             <i class="bi bi-pencil"></i>
                                         </button>
-
-                                        <?php if ($esAdmin): ?>
-                                            <button class="btn btn-sm btn-outline-danger btn-eliminar"
-                                                    data-id="<?= $ent['id'] ?>"
-                                                    data-producto="<?= htmlspecialchars($ent['producto_nombre']) ?>"
-                                                    data-cantidad="<?= $ent['cantidad'] ?>"
-                                                    data-bs-toggle="modal" data-bs-target="#modalEliminarEntrada" title="Eliminar">
-                                                <i class="bi bi-trash"></i>
-                                            </button>
-                                        <?php endif; ?>
+                                        <button class="btn btn-sm btn-outline-danger btn-eliminar"
+                                                data-id="<?= $ent['id'] ?>"
+                                                data-producto="<?= htmlspecialchars($ent['producto_nombre']) ?>"
+                                                data-cantidad="<?= $ent['cantidad'] ?>"
+                                                data-bs-toggle="modal" data-bs-target="#modalEliminarEntrada" title="Eliminar">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
                                     </div>
                                 </td>
                             </tr>
@@ -531,8 +523,7 @@ try {
     </div>
 </div>
 
-<?php if ($esAdmin): ?>
-<!-- MODAL ELIMINAR ENTRADA (SOLO VISIBLE PARA ADMINISTRADOR) -->
+<!-- MODAL ELIMINAR ENTRADA -->
 <div class="modal fade" id="modalEliminarEntrada" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -564,7 +555,6 @@ try {
         </div>
     </div>
 </div>
-<?php endif; ?>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -583,11 +573,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const deleteButtons = document.querySelectorAll('.btn-eliminar');
     deleteButtons.forEach(btn => {
         btn.addEventListener('click', function() {
-            if (document.getElementById('delete_entrada_id')) {
-                document.getElementById('delete_entrada_id').value = this.dataset.id;
-                document.getElementById('delete_producto_nombre').textContent = this.dataset.producto;
-                document.getElementById('delete_cantidad').textContent = this.dataset.cantidad;
-            }
+            document.getElementById('delete_entrada_id').value = this.dataset.id;
+            document.getElementById('delete_producto_nombre').textContent = this.dataset.producto;
+            document.getElementById('delete_cantidad').textContent = this.dataset.cantidad;
         });
     });
 });
