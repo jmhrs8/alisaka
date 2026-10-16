@@ -153,7 +153,7 @@ $logoActual = !empty($empresa['logo_url']) && file_exists(__DIR__ . '/' . $empre
             <div class="card-body">
                 <form method="POST" action="configuracion.php" enctype="multipart/form-data">
                     <input type="hidden" name="guardar_empresa" value="1">
-                    
+
                     <div class="mb-3">
                         <label class="form-label fw-bold">Nombre Comercial / Razón Social:</label>
                         <input type="text" name="nombre_empresa" class="form-control" value="<?= htmlspecialchars($empresa['nombre_empresa'] ?? '') ?>" required>
@@ -191,7 +191,7 @@ $logoActual = !empty($empresa['logo_url']) && file_exists(__DIR__ . '/' . $empre
             <div class="card-body">
                 <form method="POST" action="configuracion.php" enctype="multipart/form-data">
                     <input type="hidden" name="subir_fondo" value="1">
-                    
+
                     <div class="mb-3">
                         <label class="form-label fw-bold">Seleccionar imagen de fondo:</label>
                         <input type="file" name="imagen_fondo" class="form-control" accept="image/*" required>
@@ -222,6 +222,31 @@ $logoActual = !empty($empresa['logo_url']) && file_exists(__DIR__ . '/' . $empre
                     </form>
                 <?php endif; ?>
                     </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SECCIÓN 3: CONTROL DE ENERGÍA Y APAGADO SEGURO -->
+    <div class="col-12 mb-4">
+        <div class="card shadow-sm border-danger">
+            <div class="card-header bg-danger text-white fw-bold d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-power me-2"></i> Control de Apagado Físico del Servidor (Raspberry Pi)</span>
+                <span class="badge bg-dark text-white">Área Administrativa</span>
+            </div>
+            <div class="card-body bg-light">
+                <div class="row align-items-center">
+                    <div class="col-md-8 mb-3 mb-md-0">
+                        <h5 class="fw-bold text-danger mb-1"><i class="bi bi-shield-exclamation me-1"></i> Apagado Seguro del Sistema</h5>
+                        <p class="text-muted mb-0 small">
+                            Utiliza esta opción antes de cortar la energía del UPS o desconectar el servidor de la toma de corriente. Esta función cierra la base de datos MySQL y apaga el sistema operativo Linux de forma ordenada para evitar la pérdida o corrupción de datos.
+                        </p>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <a href="apagar_sistema.php" class="btn btn-danger btn-lg w-100 fw-bold shadow-sm">
+                            <i class="bi bi-power me-2"></i> Apagar Servidor
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
