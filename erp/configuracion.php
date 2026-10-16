@@ -1,69 +1,255 @@
 <?php
-session_start();
+require_once 'includes/header.php';
 
-// Validar que exista sesión activa
-if (!isset($_SESSION['user_id']) && !isset($_SESSION['usuario_id'])) {
-    header("Location: login.php");
-    exit;
+$mensajeExito = '';
+$mensajeError = '';
+
+$dirUploads = __DIR__ . '/uploads/';
+$dirFondo = __DIR__ . '/uploads/fondo/';
+
+// 1. ACTUALIZAR DATOS DE LA EMPRESA (NOMBRE Y LOGO)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_empresa'])) {
+    $nombreEmpresa = trim($_POST['nombre_empresa'] ?? '');
+
+    if (!empty($nombreEmpresa)) {
+        $logoUrl = $empresa['logo_url'] ?? '';
+
+        // Subir nuevo logo si se selecciona uno
+        if (!empty($_FILES['logo']['name'])) {
+            $file = $_FILES['logo'];
+            $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+            $extsPermitidas = ['jpg', 'jpeg', 'png', 'webp', 'svg'];
+
+            if (in_array($ext, $extsPermitidas)) {
+                if (!is_dir($dirUploads)) {
+                    mkdir($dirUploads, 0755, true);
+                }
+
+                $nombreLogo = 'logo_' . time() . '.' . $ext;
+                $destinoLogo = $dirUploads . $nombreLogo;
+
+                if (move_uploaded_file($file['tmp_name'], $destinoLogo)) {
+                    $logoUrl = 'uploads/' . $nombreLogo;
+                } else {
+                    $mensajeError = "No se pudo subir el logo al servidor.";
+                }
+            } else {
+                $mensajeError = "Formato de logo no válido (solo JPG, PNG, WEBP, SVG).";
+            }
+        }
+
+        if (empty($mensajeError)) {
+            try {
+                $stmt = $pdo->prepare("UPDATE configuracion SET nombre_empresa = ?, logo_url = ? WHERE id = 1");
+                $stmt->execute([$nombreEmpresa, $logoUrl]);
+                $mensajeExito = "Datos de la empresa actualizados correctamente.";
+            } catch (\PDOException $e) {
+                try {
+                    $stmt = $pdo->prepare("UPDATE empresa SET nombre_empresa = ?, logo_url = ? WHERE id = 1");
+                    $stmt->execute([$nombreEmpresa, $logoUrl]);
+                    $mensajeExito = "Datos de la empresa actualizados correctamente.";
+                } catch (\PDOException $e) {
+                    $mensajeError = "Error en la base de datos al guardar los cambios.";
+                }
+            }
+
+            // Actualizar datos locales de la variable
+            $empresa['nombre_empresa'] = $nombreEmpresa;
+            $empresa['logo_url'] = $logoUrl;
+        }
+    } else {
+        $mensajeError = "El nombre de la empresa no puede estar vacío.";
+    }
 }
 
-// Control de estado para evitar reenvíos de formulario
-$ejecutado = isset($_GET['estado']) && $_GET['estado'] === 'apagando';
+// 2. SUBIR O CAMBIAR IMAGEN DE FONDO
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subir_fondo'])) {
+    if (!empty($_FILES['imagen_fondo']['name'])) {
+        $file = $_FILES['imagen_fondo'];
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        $extsPermitidas = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'svg'];
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['confirmar_apagado'])) {
-    // 1. Ejecutar el comando de apagado en segundo plano para dar tiempo a responder el HTTP
-    shell_exec('sudo /sbin/shutdown -h now > /dev/null 2>&1 &');
+        if (in_array($ext, $extsPermitidas)) {
+            if (!is_dir($dirFondo)) {
+                mkdir($dirFondo, 0755, true);
+            }
 
-    // 2. Destruir la sesión para limpiar credenciales
-    session_destroy();
+            // Eliminar fondos anteriores
+            array_map('unlink', glob($dirFondo . 'background.*'));
 
-    // 3. Redirigir por GET (evita que el botón F5/Refrescar vuelva a enviar el POST de apagado)
-    header("Location: apagar_sistema.php?estado=apagando");
-    exit;
+            $nombreArchivo = 'background.' . $ext;
+            $destino = $dirFondo . $nombreArchivo;
+            $rutaRelativa = 'uploads/fondo/' . $nombreArchivo;
+
+            if (move_uploaded_file($file['tmp_name'], $destino)) {
+                try {
+                    $stmt = $pdo->prepare("UPDATE configuracion SET bg_url = ? WHERE id = 1");
+                    $stmt->execute([$rutaRelativa]);
+                } catch (\PDOException $e) {
+                    try {
+                        $stmt = $pdo->prepare("UPDATE empresa SET bg_url = ? WHERE id = 1");
+                        $stmt->execute([$rutaRelativa]);
+                    } catch (\PDOException $e) {}
+                }
+
+                $mensajeExito = "¡Imagen de fondo actualizada con éxito!";
+                $empresa['bg_url'] = $rutaRelativa;
+            } else {
+                $mensajeError = "Error al guardar el fondo en el servidor.";
+            }
+        } else {
+            $mensajeError = "Formato de fondo no válido.";
+        }
+    } else {
+        $mensajeError = "Selecciona una imagen para el fondo.";
+    }
 }
+
+// 3. ELIMINAR / RESTABLECER IMAGEN DE FONDO
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_fondo'])) {
+    array_map('unlink', glob($dirFondo . 'background.*'));
+
+    try {
+        $pdo->query("UPDATE configuracion SET bg_url = '' WHERE id = 1");
+    } catch (\PDOException $e) {
+        try {
+            $pdo->query("UPDATE empresa SET bg_url = '' WHERE id = 1");
+        } catch (\PDOException $e) {}
+    }
+
+    $mensajeExito = "Fondo eliminado. Se restableció el color por defecto.";
+    $empresa['bg_url'] = '';
+}
+
+$bgActual = !empty($empresa['bg_url']) && file_exists(__DIR__ . '/' . $empresa['bg_url']) ? $empresa['bg_url'] : '';
+$logoActual = !empty($empresa['logo_url']) && file_exists(__DIR__ . '/' . $empresa['logo_url']) ? $empresa['logo_url'] : '';
 ?>
 
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apagar Servidor ERP - PLASTICOS ALISAKA</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-</head>
-<body class="bg-dark text-white d-flex align-items-center justify-content-center vh-100">
-    <div class="card bg-secondary text-white shadow-lg p-4 text-center" style="max-width: 450px; border-radius: 12px;">
-        
-        <?php if ($ejecutado): ?>
-            <!-- PANTALLA TRAS EJECUTAR EL APAGADO (Protegida contra F5) -->
-            <i class="bi bi-power text-danger display-1 mb-3 d-block"></i>
-            <h3 class="fw-bold text-warning mb-3">Servidor Apagándose...</h3>
-            <div class="alert alert-warning text-dark fw-bold text-start mb-3" role="alert">
-                <i class="bi bi-info-circle-fill me-1"></i> El servidor se está apagando de forma segura. Puedes desconectarlo o apagar el UPS en 30 segundos.
-            </div>
-            <p class="small text-light text-start mb-4">
-                <strong>Instrucciones físicas:</strong>
-                <ol class="text-start small ps-3 mb-0">
-                    <li>Espera a que el LED verde de la Raspberry Pi deje de parpadear.</li>
-                    <li>Una vez que solo quede el LED rojo encendido fijo, apaga el UPS con seguridad.</li>
-                </ol>
-            </p>
-            <a href="login.php" class="btn btn-light w-100 fw-bold">Volver a Iniciar Sesión</a>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-gear-fill"></i> Configuración General del Sistema</h2>
+</div>
 
-        <?php else: ?>
-            <!-- FORMULARIO ORIGINAL DE CONFIRMACIÓN -->
-            <h3 class="fw-bold mb-3"><i class="bi bi-power text-danger me-2"></i> Apagado del Servidor</h3>
-            <p>¿Estás seguro de que deseas apagar la Raspberry Pi? Esto detendrá el sistema ERP para todos los usuarios.</p>
-            
-            <form method="POST" action="apagar_sistema.php">
-                <button type="submit" name="confirmar_apagado" value="1" class="btn btn-danger btn-lg w-100 fw-bold mb-2 shadow">
-                    Si, Apagar Servidor
-                </button>
-                <a href="configuracion.php" class="btn btn-light w-100 fw-bold">Cancelar</a>
-            </form>
-        <?php endif; ?>
-
+<?php if ($mensajeExito): ?>
+    <div class="alert alert-success alert-dismissible fade show" role="alert">
+        <i class="bi bi-check-circle-fill me-2"></i> <?= htmlspecialchars($mensajeExito) ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
-</body>
-</html>
+<?php endif; ?>
+
+<?php if ($mensajeError): ?>
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i> <?= htmlspecialchars($mensajeError) ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+<?php endif; ?>
+
+<div class="row">
+    <!-- SECCIÓN 1: DATOS DE LA EMPRESA Y LOGO -->
+    <div class="col-md-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header bg-dark text-white fw-bold">
+                <i class="bi bi-building me-2"></i> Información de la Empresa
+            </div>
+            <div class="card-body">
+                <form method="POST" action="configuracion.php" enctype="multipart/form-data">
+                    <input type="hidden" name="guardar_empresa" value="1">
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Nombre Comercial / Razón Social:</label>
+                        <input type="text" name="nombre_empresa" class="form-control" value="<?= htmlspecialchars($empresa['nombre_empresa'] ?? '') ?>" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Cambiar Logo de la Empresa:</label>
+                        <input type="file" name="logo" class="form-control" accept="image/*">
+                        <div class="form-text">Formatos aceptados: PNG, JPG, WEBP, SVG.</div>
+                    </div>
+
+                    <?php if ($logoActual): ?>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Logo actual:</label>
+                            <div class="border rounded p-2 bg-light text-center">
+                                <img src="<?= htmlspecialchars($logoActual) ?>?v=<?= time() ?>" style="max-height: 80px;" class="img-fluid">
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-save"></i> Guardar Cambios de la Empresa
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- SECCIÓN 2: PERSONALIZACIÓN DEL FONDO COMPLETO -->
+    <div class="col-md-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header bg-dark text-white fw-bold">
+                <i class="bi bi-image me-2"></i> Fondo Personalizado (Pantalla Completa)
+            </div>
+            <div class="card-body">
+                <form method="POST" action="configuracion.php" enctype="multipart/form-data">
+                    <input type="hidden" name="subir_fondo" value="1">
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Seleccionar imagen de fondo:</label>
+                        <input type="file" name="imagen_fondo" class="form-control" accept="image/*" required>
+                        <div class="form-text">Soporta cualquier formato (<strong>JPG, PNG, WEBP, GIF, SVG</strong>).</div>
+                    </div>
+
+                    <?php if ($bgActual): ?>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Vista previa del fondo actual:</label>
+                            <div class="border rounded p-2 bg-light text-center">
+                                <img src="<?= htmlspecialchars($bgActual) ?>?v=<?= time() ?>" style="max-height: 120px; width: 100%; object-fit: cover;" class="rounded shadow-sm">
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary flex-grow-1">
+                            <i class="bi bi-upload"></i> Aplicar Fondo
+                        </button>
+                </form>
+
+                <?php if ($bgActual): ?>
+                    <form method="POST" action="configuracion.php" onsubmit="return confirm('¿Seguro que deseas quitar la imagen de fondo?');">
+                        <input type="hidden" name="eliminar_fondo" value="1">
+                        <button type="submit" class="btn btn-outline-danger">
+                            <i class="bi bi-trash"></i> Quitar
+                        </button>
+                    </form>
+                <?php endif; ?>
+                    </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SECCIÓN 3: CONTROL DE ENERGÍA Y APAGADO SEGURO -->
+    <div class="col-12 mb-4">
+        <div class="card shadow-sm border-danger">
+            <div class="card-header bg-danger text-white fw-bold d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-power me-2"></i> Control de Apagado Físico del Servidor (Raspberry Pi)</span>
+                <span class="badge bg-dark text-white">Área Administrativa</span>
+            </div>
+            <div class="card-body bg-light">
+                <div class="row align-items-center">
+                    <div class="col-md-8 mb-3 mb-md-0">
+                        <h5 class="fw-bold text-danger mb-1"><i class="bi bi-shield-exclamation me-1"></i> Apagado Seguro del Sistema</h5>
+                        <p class="text-muted mb-0 small">
+                            Utiliza esta opción antes de cortar la energía del UPS o desconectar el servidor de la toma de corriente. Esta función cierra la base de datos MySQL y apaga el sistema operativo Linux de forma ordenada para evitar la pérdida o corrupción de datos.
+                        </p>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <a href="apagar_sistema.php" class="btn btn-danger btn-lg w-100 fw-bold shadow-sm">
+                            <i class="bi bi-power me-2"></i> Apagar Servidor
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<?php require_once 'includes/footer.php'; ?>
