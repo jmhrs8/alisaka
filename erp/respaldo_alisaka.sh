@@ -7,7 +7,7 @@
 
 # 1. CONFIGURACIÓN DE RUTAS Y DATOS DE CONEXIÓN
 DIRECTORIO_PHP="/var/www/html/erp"
-DIRECTORIO_RESPALDOS="/home/sistemas/backups"
+DIRECTORIO_RESPALDOS="/var/www/html/erp/respaldos/"
 FECHA=$(date +"%Y-%m-%d %H:%M:%S")
 
 DB_USER="root"
