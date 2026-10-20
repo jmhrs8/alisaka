@@ -1,0 +1,28 @@
+==========================================
+ Iniciando respaldo: 2026-10-20 10:25:01
+==========================================
+[1/5] Generando respaldo SQL en /var/www/html/erp/respaldos...
+mysqldump: [Warning] Using a password on the command line interface can be insecure.
+  -> Base de datos respaldada correctamente en: /var/www/html/erp/respaldos/base_de_datos_ultima.sql
+[2/5] Copiando archivos de la aplicación PHP...
+[3/5] Generando archivo comprimido único (sobreescribiendo anterior)...
+[4/5] Sincronizando respaldo con GitHub...
+fatal: detected dubious ownership in repository at '/var/www/html'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /var/www/html
+fatal: detected dubious ownership in repository at '/var/www/html'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /var/www/html
+fatal: detected dubious ownership in repository at '/var/www/html'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /var/www/html
+  -> [AVISO] Falló el envío a GitHub o no hubo cambios detectados.
+[5/5] Mantenimiento completado.
+==========================================
+ RESPALDO EXITOSO Y REEMPLAZADO 
+ ARCHIVO SQL: /var/www/html/erp/respaldos/base_de_datos_ultima.sql
+ PAQUETE TAR.GZ: /var/www/html/erp/respaldos/RESPALDO_ALISAKA_ULTIMO.tar.gz
+==========================================
