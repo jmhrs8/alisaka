@@ -5,26 +5,30 @@
 # Sistema: PLÁSTICOS ALISAKA
 # ==============================================================================
 
-# 1. CONFIGURACIÓN DE RUTAS Y DATOS DE CONEXIÓN
+# 1. EXPORTAR RUTAS DE ENTORNO PARA CRON
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/home/sistemas
+
+# 2. CONFIGURACIÓN DE RUTAS Y DATOS DE CONEXIÓN
 DIRECTORIO_PHP="/var/www/html/erp"
-DIRECTORIO_RESPALDOS="/var/www/html/erp/respaldos/"
+DIRECTORIO_RESPALDOS="/var/www/html/erp/respaldos"
 FECHA=$(date +"%Y-%m-%d %H:%M:%S")
 
 DB_USER="root"
 DB_PASS="jmhl2474"
 DB_NAME="erp_inventory"
 
-# 2. CREAR DIRECTORIOS Y RUTA TEMPORAL
-mkdir -p "$DIRECTORIO_RESPALDOS"
+# 3. CREAR DIRECTORIOS Y RUTA TEMPORAL
+/bin/mkdir -p "$DIRECTORIO_RESPALDOS"
 DIR_TEMP="/tmp/respaldo_temp"
-rm -rf "$DIR_TEMP"
-mkdir -p "$DIR_TEMP"
+/bin/rm -rf "$DIR_TEMP"
+/bin/mkdir -p "$DIR_TEMP"
 
 echo "=========================================="
 echo " Iniciando respaldo: $FECHA"
 echo "=========================================="
 
-# 3. NOMBRES FIJOS PARA SOBREESCRIBIR Y EVITAR SATURAR EL DISCO
+# 4. NOMBRES FIJOS PARA SOBREESCRIBIR Y EVITAR SATURAR EL DISCO
 ARCHIVO_SQL_RECIENTE="$DIRECTORIO_RESPALDOS/base_de_datos_ultima.sql"
 ARCHIVO_FINAL_RECIENTE="$DIRECTORIO_RESPALDOS/RESPALDO_ALISAKA_ULTIMO.tar.gz"
 
@@ -35,30 +39,31 @@ if [ -s "$ARCHIVO_SQL_RECIENTE" ]; then
     echo "  -> Base de datos respaldada correctamente en: $ARCHIVO_SQL_RECIENTE"
 else
     echo "  -> [ERROR] Falló la extracción de la BD."
-    rm -rf "$DIR_TEMP"
+    /bin/rm -rf "$DIR_TEMP"
     exit 1
 fi
 
-cp "$ARCHIVO_SQL_RECIENTE" "$DIR_TEMP/"
+/bin/cp "$ARCHIVO_SQL_RECIENTE" "$DIR_TEMP/"
 
-# 4. COPIAR CÓDIGO PHP Y COMPRIMIR
+# 5. COPIAR CÓDIGO PHP Y COMPRIMIR
 echo "[2/5] Copiando archivos de la aplicación PHP..."
-cp -r "$DIRECTORIO_PHP" "$DIR_TEMP/codigo_php"
+/bin/cp -r "$DIRECTORIO_PHP" "$DIR_TEMP/codigo_php"
 
 echo "[3/5] Generando archivo comprimido único (sobreescribiendo anterior)..."
 tar -czf "$ARCHIVO_FINAL_RECIENTE" -C "$DIR_TEMP" .
-rm -rf "$DIR_TEMP"
+/bin/rm -rf "$DIR_TEMP"
 
-# 5. INTEGRACIÓN CON GITHUB (SUBIR ÚLTIMO RESPALDO Y CÓDIGO)
+# 6. INTEGRACIÓN CON GITHUB (SUBIR RESPALDO Y CÓDIGO)
 echo "[4/5] Sincronizando respaldo con GitHub..."
 
 cd "$DIRECTORIO_PHP" || exit
 
-# Asegurar que Git agregue los cambios de código y el dump si está rastreado
-git add .
+# Asegurar el directorio seguro en Git para ejecuciones bajo root/cron
+git config --global --add safe.directory "$DIRECTORIO_PHP"
 
-# Hacer commit registrando la fecha del respaldo
-git commit -m "Auto-backup sistema y BD: $FECHA"
+# Agregar archivos y hacer commit
+git add .
+git commit -m "Auto-backup sistema y BD: $FECHA" --no-edit
 
 # Subir a GitHub
 git push origin main
@@ -66,7 +71,7 @@ git push origin main
 if [ $? -eq 0 ]; then
     echo "  -> [OK] Cambios y respaldos subidos exitosamente a GitHub."
 else
-    echo "  -> [AVISO] No hubo cambios nuevos o falló el envio a GitHub."
+    echo "  -> [AVISO] Falló el envío a GitHub o no hubo cambios detectados."
 fi
 
 echo "[5/5] Mantenimiento completado."
