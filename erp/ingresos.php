@@ -16,7 +16,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar'])) {
             $pdo->beginTransaction();
 
             if ($origen === 'ingreso') {
-                // Borrar archivo adjunto si existe
                 $stmtImg = $pdo->prepare("SELECT comprobante_url FROM ingresos WHERE id = ?");
                 $stmtImg->execute([$idEliminar]);
                 $archivo = $stmtImg->fetchColumn();
@@ -29,7 +28,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar'])) {
                 $stmtDel->execute([$idEliminar]);
 
             } else if ($origen === 'salida') {
-                // 1. Reintegrar el inventario de las mercancías vendidas en esta salida
                 $stmtDet = $pdo->prepare("SELECT producto_id, cantidad FROM detalle_salidas WHERE salida_id = ?");
                 $stmtDet->execute([$idEliminar]);
                 $detalles = $stmtDet->fetchAll(PDO::FETCH_ASSOC);
@@ -39,7 +37,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar'])) {
                     $stmtRestaurar->execute([$item['cantidad'], $item['producto_id']]);
                 }
 
-                // 2. Eliminar archivo adjunto de la venta si existe
                 $stmtImg = $pdo->prepare("SELECT factura_url FROM salidas WHERE id = ?");
                 $stmtImg->execute([$idEliminar]);
                 $archivo = $stmtImg->fetchColumn();
@@ -48,7 +45,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_eliminar'])) {
                     @unlink(__DIR__ . '/' . $archivo);
                 }
 
-                // 3. Eliminar detalle y registro de salida
                 $stmtDelDet = $pdo->prepare("DELETE FROM detalle_salidas WHERE salida_id = ?");
                 $stmtDelDet->execute([$idEliminar]);
 
@@ -82,7 +78,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar'])) {
             $subtotal = $requiereIva ? ($montoTotal / 1.16) : $montoTotal;
             $iva      = $requiereIva ? ($montoTotal - $subtotal) : 0.00;
 
-            // Procesar subida de báucher / factura / evidencia
             $comprobanteUrl = null;
             if (!empty($_FILES['comprobante']['name']) && $_FILES['comprobante']['error'] === UPLOAD_ERR_OK) {
                 $file = $_FILES['comprobante'];
@@ -208,7 +203,7 @@ $sqlUnificado = "
 
 // Cargar Historial Unificado
 try {
-    $sqlFinal = "SELECT * FROM ({$sqlUnificado}) AS reporte_ingresos ORDER BY fecha DESC LIMIT 100";
+    $sqlFinal = "SELECT * FROM ({$sqlUnificado}) AS reporte_ingresos ORDER BY fecha DESC LIMIT 200";
     $ingresos = $pdo->query($sqlFinal)->fetchAll(PDO::FETCH_ASSOC);
 } catch (\PDOException $e) {
     $ingresos = [];
@@ -233,8 +228,14 @@ $totalTarjeta  = $totalesMetodo['tarjeta'] ?? 0.00;
 $totalIngresos = array_sum($totalesMetodo);
 ?>
 
+<!-- Librería SheetJS para exportar a Excel -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-cash-coin text-success me-2"></i> Reporte de Ingresos y Cobros</h2>
+    <button id="btnExportarIngresosExcel" class="btn btn-success fw-bold shadow-sm">
+        <i class="bi bi-file-earmark-excel me-1"></i> Descargar Excel Clasificado
+    </button>
 </div>
 
 <?php if ($mensajeExito): ?>
@@ -294,7 +295,7 @@ $totalIngresos = array_sum($totalesMetodo);
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle mb-0">
+            <table class="table table-striped table-hover align-middle mb-0" id="tablaIngresos">
                 <thead class="table-dark">
                     <tr>
                         <th>Fecha</th>
@@ -332,7 +333,6 @@ $totalIngresos = array_sum($totalesMetodo);
                                 </td>
                                 <td class="text-center">
                                     <div class="btn-group btn-group-sm">
-                                        <!-- Botón Editar -->
                                         <button type="button" class="btn btn-outline-warning"
                                                 data-bs-toggle="modal"
                                                 data-bs-target="#modalEditarRegistro"
@@ -346,7 +346,6 @@ $totalIngresos = array_sum($totalesMetodo);
                                             <i class="bi bi-pencil-square"></i>
                                         </button>
 
-                                        <!-- Botón Eliminar -->
                                         <form method="POST" action="ingresos.php" class="d-inline" onsubmit="return confirm('¿Confirmas eliminar este registro de ingreso? Si es una venta, la mercancía regresará al inventario.');">
                                             <input type="hidden" name="accion_eliminar" value="1">
                                             <input type="hidden" name="registro_id" value="<?= $ing['id'] ?>">
@@ -431,6 +430,9 @@ $totalIngresos = array_sum($totalesMetodo);
 </div>
 
 <script>
+// Pasar datos PHP a JS para estructurar el Excel ordenado
+const datosIngresos = <?= json_encode($ingresos, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+
 document.addEventListener('DOMContentLoaded', function () {
     var modalEditar = document.getElementById('modalEditarRegistro');
     if (modalEditar) {
@@ -446,6 +448,76 @@ document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('edit_calcular_iva').checked = button.getAttribute('data-iva') === '1';
         });
     }
+
+    // Exportar a Excel ORDENADO POR TIPO DE PAGO
+    document.getElementById('btnExportarIngresosExcel').addEventListener('click', function() {
+        const datosEfectivo = [];
+        const datosTransfer = [];
+        const datosTarjeta  = [];
+
+        datosIngresos.forEach(item => {
+            const metodo = (item.metodo_pago || 'efectivo').toLowerCase();
+            const fila = {
+                "Fecha": item.fecha || '',
+                "Concepto / Cliente": item.concepto || '',
+                "Forma de Pago": metodo.toUpperCase(),
+                "Subtotal": parseFloat(item.subtotal || 0),
+                "IVA": parseFloat(item.iva || 0),
+                "Total Cobrado": parseFloat(item.total || 0)
+            };
+
+            if (metodo === 'transferencia') {
+                datosTransfer.push(fila);
+            } else if (metodo === 'tarjeta') {
+                datosTarjeta.push(fila);
+            } else {
+                datosEfectivo.push(fila);
+            }
+        });
+
+        // Construir arreglo unificado con separadores
+        const datosFinales = [];
+
+        // 1. EFECTIVO
+        datosFinales.push({"Fecha": "=== INGRESOS EN EFECTIVO ===", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": ""});
+        let totalEfectivo = 0;
+        datosEfectivo.forEach(f => {
+            datosFinales.push(f);
+            totalEfectivo += f["Total Cobrado"];
+        });
+        datosFinales.push({"Fecha": "SUBTOTAL EFECTIVO", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalEfectivo});
+        datosFinales.push({}); // Línea en blanco
+
+        // 2. TRANSFERENCIAS
+        datosFinales.push({"Fecha": "=== INGRESOS POR TRANSFERENCIA (SPEI) ===", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": ""});
+        let totalTransfer = 0;
+        datosTransfer.forEach(f => {
+            datosFinales.push(f);
+            totalTransfer += f["Total Cobrado"];
+        });
+        datosFinales.push({"Fecha": "SUBTOTAL TRANSFERENCIAS", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalTransfer});
+        datosFinales.push({}); // Línea en blanco
+
+        // 3. TARJETAS
+        datosFinales.push({"Fecha": "=== INGRESOS POR TARJETA ===", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": ""});
+        let totalTarjeta = 0;
+        datosTarjeta.forEach(f => {
+            datosFinales.push(f);
+            totalTarjeta += f["Total Cobrado"];
+        });
+        datosFinales.push({"Fecha": "SUBTOTAL TARJETAS", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalTarjeta});
+        datosFinales.push({}); // Línea en blanco
+
+        // TOTAL GENERAL
+        const totalGeneral = totalEfectivo + totalTransfer + totalTarjeta;
+        datosFinales.push({"Fecha": ">>> TOTAL GENERAL DE INGRESOS <<<", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalGeneral});
+
+        const ws = XLSX.utils.json_to_sheet(datosFinales);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Ingresos_Clasificados");
+
+        XLSX.writeFile(wb, "Reporte_Ingresos_Clasificado_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    });
 });
 </script>
 

@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['crear_egreso'])) {
 
             $tipoComprobante = !empty($comprobanteUrl) ? 'comprobante_directo' : 'sin_comprobante';
 
-            $stmtIns = $pdo->prepare("INSERT INTO egresos 
+            $stmtIns = $pdo->prepare("INSERT INTO egresos
                 (proveedor_id, concepto, monto, metodo_pago, tipo_comprobante, comprobante_url, fecha_pago)
                 VALUES (?, ?, ?, ?, ?, ?, NOW())");
             $stmtIns->execute([$proveedorId, $concepto, $monto, $metodoPago, $tipoComprobante, $comprobanteUrl]);
@@ -60,9 +60,9 @@ try {
 
 // CONSULTA OPTIMIZADA: Evita duplicaciones visuales y rescata la relación con Proveedores y Entradas
 try {
-    $sqlEgresos = "SELECT eg.*, 
-                          pr.nombre AS proveedor_nombre,
-                          ei.id AS entrada_folio
+    $sqlEgresos = "SELECT eg.*,
+                        pr.nombre AS proveedor_nombre,
+                        ei.id AS entrada_folio
                    FROM egresos eg
                    LEFT JOIN proveedores pr ON eg.proveedor_id = pr.id
                    LEFT JOIN entradas_inventario ei ON eg.entrada_id = ei.id
@@ -73,14 +73,26 @@ try {
     $mensajeError = "Error al consultar los egresos: " . $e->getMessage();
 }
 
-// Métricas generales
+// Métricas generales y desgloses
 $totalEgresos = 0;
 $egresosHoy = 0;
+$egresoEfectivo = 0;
+$egresoTransfer = 0;
+$egresoTarjeta = 0;
 $hoy = date('Y-m-d');
 
 foreach ($egresos as $e) {
     $monto = floatval($e['monto']);
     $totalEgresos += $monto;
+
+    $metodo = strtolower($e['metodo_pago'] ?? 'efectivo');
+    if ($metodo === 'transferencia') {
+        $egresoTransfer += $monto;
+    } elseif ($metodo === 'tarjeta') {
+        $egresoTarjeta += $monto;
+    } else {
+        $egresoEfectivo += $monto;
+    }
 
     if (!empty($e['fecha_pago']) && date('Y-m-d', strtotime($e['fecha_pago'])) === $hoy) {
         $egresosHoy += $monto;
@@ -88,12 +100,20 @@ foreach ($egresos as $e) {
 }
 ?>
 
+<!-- Librería SheetJS para exportar a Excel clasificado -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
 <div class="card shadow-sm border-0 mb-4">
     <div class="card-body p-4">
 
-        <h3 class="mb-4 text-dark fw-bold">
-            <i class="bi bi-arrow-down-circle-fill text-danger me-2"></i> Módulo de Egresos y Salidas de Caja
-        </h3>
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <h3 class="text-dark fw-bold mb-0">
+                <i class="bi bi-arrow-down-circle-fill text-danger me-2"></i> Módulo de Egresos y Salidas de Caja
+            </h3>
+            <button id="btnExportarEgresosExcel" class="btn btn-success fw-bold shadow-sm">
+                <i class="bi bi-file-earmark-excel me-1"></i> Descargar Excel Clasificado
+            </button>
+        </div>
 
         <?php if ($mensajeExito): ?>
             <div class="alert alert-success alert-dismissible fade show" role="alert">
@@ -109,24 +129,36 @@ foreach ($egresos as $e) {
             </div>
         <?php endif; ?>
 
-        <!-- TARJETAS METRICAS -->
+        <!-- TARJETAS METRICAS (Desglose total y por método de pago) -->
         <div class="row g-3 mb-4">
-            <div class="col-md-4">
+            <div class="col-md">
                 <div class="p-3 bg-danger text-white rounded-3 shadow-sm">
-                    <small class="text-uppercase fw-bold opacity-75">EGRESOS DE HOY</small>
-                    <h3 class="fw-bold mb-0 mt-1">$<?= number_format($egresosHoy, 2) ?></h3>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="p-3 text-white rounded-3 shadow-sm" style="background-color: #435ebe;">
-                    <small class="text-uppercase fw-bold opacity-75">TOTAL ACUMULADO EGRESADO</small>
+                    <small class="text-uppercase fw-bold opacity-75">TOTAL EGRESOS</small>
                     <h3 class="fw-bold mb-0 mt-1">$<?= number_format($totalEgresos, 2) ?></h3>
                 </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md">
                 <div class="p-3 bg-dark text-white rounded-3 shadow-sm">
-                    <small class="text-uppercase fw-bold opacity-75">TOTAL TRANSACCIONES</small>
-                    <h3 class="fw-bold mb-0 mt-1"><?= count($egresos) ?></h3>
+                    <small class="text-uppercase fw-bold opacity-75">EFECTIVO</small>
+                    <h3 class="fw-bold mb-0 mt-1">$<?= number_format($egresoEfectivo, 2) ?></h3>
+                </div>
+            </div>
+            <div class="col-md">
+                <div class="p-3 bg-primary text-white rounded-3 shadow-sm">
+                    <small class="text-uppercase fw-bold opacity-75">TRANSFERENCIAS</small>
+                    <h3 class="fw-bold mb-0 mt-1">$<?= number_format($egresoTransfer, 2) ?></h3>
+                </div>
+            </div>
+            <div class="col-md">
+                <div class="p-3 bg-info text-dark rounded-3 shadow-sm">
+                    <small class="text-uppercase fw-bold opacity-75">TARJETAS</small>
+                    <h3 class="fw-bold mb-0 mt-1">$<?= number_format($egresoTarjeta, 2) ?></h3>
+                </div>
+            </div>
+            <div class="col-md">
+                <div class="p-3 text-white rounded-3 shadow-sm" style="background-color: #435ebe;">
+                    <small class="text-uppercase fw-bold opacity-75">EGRESOS DE HOY</small>
+                    <h3 class="fw-bold mb-0 mt-1">$<?= number_format($egresosHoy, 2) ?></h3>
                 </div>
             </div>
         </div>
@@ -262,6 +294,9 @@ foreach ($egresos as $e) {
 </div>
 
 <script>
+// Pasar datos PHP a JS para el Excel ordenado
+const datosEgresos = <?= json_encode($egresos, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+
 document.addEventListener('DOMContentLoaded', function() {
     // 1. Prevención de doble Submit
     const formEgreso = document.getElementById('formEgreso');
@@ -300,6 +335,75 @@ document.addEventListener('DOMContentLoaded', function() {
 
     inputTexto.addEventListener('keyup', filtrar);
     selectMetodo.addEventListener('change', filtrar);
+
+    // 3. Exportar a Excel ORDENADO por Efectivo, Transferencia y Tarjeta
+    document.getElementById('btnExportarEgresosExcel').addEventListener('click', function() {
+        const datosEfectivo = [];
+        const datosTransfer = [];
+        const datosTarjeta  = [];
+
+        datosEgresos.forEach(item => {
+            const metodo = (item.metodo_pago || 'efectivo').toLowerCase();
+            const fila = {
+                "ID": item.id || '',
+                "Fecha y Hora": item.fecha_pago || '',
+                "Proveedor / Origen": item.proveedor_nombre || 'Gasto Directo',
+                "Concepto": item.concepto || '',
+                "Método Pago": metodo.toUpperCase(),
+                "Monto Salida ($)": parseFloat(item.monto || 0)
+            };
+
+            if (metodo === 'transferencia') {
+                datosTransfer.push(fila);
+            } else if (metodo === 'tarjeta') {
+                datosTarjeta.push(fila);
+            } else {
+                datosEfectivo.push(fila);
+            }
+        });
+
+        const datosFinales = [];
+
+        // EFECTIVO
+        datosFinales.push({"ID": "=== EGRESOS EN EFECTIVO ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
+        let totalEfectivo = 0;
+        datosEfectivo.forEach(f => {
+            datosFinales.push(f);
+            totalEfectivo += f["Monto Salida ($)"];
+        });
+        datosFinales.push({"ID": "SUBTOTAL EFECTIVO", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalEfectivo});
+        datosFinales.push({});
+
+        // TRANSFERENCIAS
+        datosFinales.push({"ID": "=== EGRESOS POR TRANSFERENCIA (SPEI) ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
+        let totalTransfer = 0;
+        datosTransfer.forEach(f => {
+            datosFinales.push(f);
+            totalTransfer += f["Monto Salida ($)"];
+        });
+        datosFinales.push({"ID": "SUBTOTAL TRANSFERENCIAS", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalTransfer});
+        datosFinales.push({});
+
+        // TARJETAS
+        datosFinales.push({"ID": "=== EGRESOS POR TARJETA ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
+        let totalTarjeta = 0;
+        datosTarjeta.forEach(f => {
+            datosFinales.push(f);
+            totalTarjeta += f["Monto Salida ($)"];
+        });
+        datosFinales.push({"ID": "SUBTOTAL TARJETAS", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalTarjeta});
+        datosFinales.push({});
+
+        // TOTAL GENERAL
+        const totalGeneral = totalEfectivo + totalTransfer + totalTarjeta;
+        datosFinales.push({"ID": ">>> TOTAL GENERAL DE EGRESOS <<<", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalGeneral});
+
+        const ws = XLSX.utils.json_to_sheet(datosFinales);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Egresos_Clasificados");
+
+        XLSX.writeFile(wb, "Reporte_Egresos_Clasificado_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    });
 });
 </script>
 
