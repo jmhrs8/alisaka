@@ -167,6 +167,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar'])) {
     }
 }
 
+// --- PARÁMETROS DE FILTRADO PARA ANÁLISIS POR DÍA, MES O AÑO ---
+$filtroTipo  = $_GET['filtro_tipo'] ?? 'todos'; // todos, dia, mes, ano
+$filtroValor = $_GET['filtro_valor'] ?? date('Y-m'); // ej. 2026-11 o 2026-11-17 o 2026
+
+$whereFiltroFecha = "";
+$paramsFiltro = [];
+
+if ($filtroTipo === 'dia' && !empty($filtroValor)) {
+    $whereFiltroFecha = " AND DATE(fecha) = ? ";
+    $paramsFiltro[] = $filtroValor;
+} elseif ($filtroTipo === 'mes' && !empty($filtroValor)) {
+    // $filtroValor viene formato 'YYYY-MM'
+    $whereFiltroFecha = " AND DATE_FORMAT(fecha, '%Y-%m') = ? ";
+    $paramsFiltro[] = $filtroValor;
+} elseif ($filtroTipo === 'ano' && !empty($filtroValor)) {
+    // $filtroValor viene formato 'YYYY'
+    $whereFiltroFecha = " AND YEAR(fecha) = ? ";
+    $paramsFiltro[] = $filtroValor;
+}
+
 // --- CONSULTA UNIFICADA ---
 $sqlUnificado = "
     SELECT
@@ -201,23 +221,28 @@ $sqlUnificado = "
     WHERE s.estado_cobro = 'cobrado' OR s.tipo_pago = 'contado'
 ";
 
-// Cargar Historial Unificado
+// Cargar Historial Unificado con Filtro Aplicado
 try {
-    $sqlFinal = "SELECT * FROM ({$sqlUnificado}) AS reporte_ingresos ORDER BY fecha DESC LIMIT 200";
-    $ingresos = $pdo->query($sqlFinal)->fetchAll(PDO::FETCH_ASSOC);
+    $sqlFinal = "SELECT * FROM ({$sqlUnificado}) AS reporte_ingresos WHERE 1=1 {$whereFiltroFecha} ORDER BY fecha DESC LIMIT 300";
+    $stmtIng = $pdo->prepare($sqlFinal);
+    $stmtIng->execute($paramsFiltro);
+    $ingresos = $stmtIng->fetchAll(PDO::FETCH_ASSOC);
 } catch (\PDOException $e) {
     $ingresos = [];
     $mensajeError = "Error al consultar los ingresos: " . $e->getMessage();
 }
 
-// Calcular Totales por Método de Pago
+// Calcular Totales por Método de Pago con el Filtro Aplicado
 try {
     $sqlTotales = "
         SELECT metodo_pago, SUM(total) AS total_metodo
         FROM ({$sqlUnificado}) AS reporte_totales
+        WHERE 1=1 {$whereFiltroFecha}
         GROUP BY metodo_pago
     ";
-    $totalesMetodo = $pdo->query($sqlTotales)->fetchAll(PDO::FETCH_KEY_PAIR);
+    $stmtTot = $pdo->prepare($sqlTotales);
+    $stmtTot->execute($paramsFiltro);
+    $totalesMetodo = $stmtTot->fetchAll(PDO::FETCH_KEY_PAIR);
 } catch (\PDOException $e) {
     $totalesMetodo = [];
 }
@@ -234,7 +259,7 @@ $totalIngresos = array_sum($totalesMetodo);
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-cash-coin text-success me-2"></i> Reporte de Ingresos y Cobros</h2>
     <button id="btnExportarIngresosExcel" class="btn btn-success fw-bold shadow-sm">
-        <i class="bi bi-file-earmark-excel me-1"></i> Descargar Excel Clasificado
+        <i class="bi bi-file-earmark-excel me-1"></i> Descargar Excel Clasificado y Filtrado
     </button>
 </div>
 
@@ -251,6 +276,41 @@ $totalIngresos = array_sum($totalesMetodo);
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
 <?php endif; ?>
+
+<!-- PANEL DE FILTROS PARA ANÁLISIS POR DÍA, MES O AÑO -->
+<div class="card shadow-sm mb-4 border-dark">
+    <div class="card-header bg-dark text-white fw-bold">
+        <i class="bi bi-funnel-fill me-1"></i> Filtros de Análisis Temporal (Día, Mes o Año)
+    </div>
+    <div class="card-body">
+        <form method="GET" action="ingresos.php" class="row g-3 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label fw-bold">Tipo de Periodo:</label>
+                <select name="filtro_tipo" id="filtro_tipo" class="form-select" onchange="cambiarTipoFiltro(this.value)">
+                    <option value="todos" <?= $filtroTipo === 'todos' ? 'selected' : '' ?>>Histórico Completo (Sin filtro)</option>
+                    <option value="dia" <?= $filtroTipo === 'dia' ? 'selected' : '' ?>>Día Específico</option>
+                    <option value="mes" <?= $filtroTipo === 'mes' ? 'selected' : '' ?>>Mes Específico</option>
+                    <option value="ano" <?= $filtroTipo === 'ano' ? 'selected' : '' ?>>Año Específico</option>
+                </select>
+            </div>
+
+            <div class="col-md-5" id="contenedor_valor_filtro" style="<?= $filtroTipo === 'todos' ? 'display:none;' : '' ?>">
+                <label class="form-label fw-bold" id="label_valor_filtro">Seleccionar Fecha:</label>
+                <?php if ($filtroTipo === 'dia'): ?>
+                    <input type="date" name="filtro_valor" value="<?= htmlspecialchars($filtroValor) ?>" class="form-control">
+                <?php elseif ($filtroTipo === 'ano'): ?>
+                    <input type="number" min="2020" max="2035" name="filtro_valor" value="<?= htmlspecialchars($filtroValor) ?>" class="form-control" placeholder="Ej. 2026">
+                <?php else: ?>
+                    <input type="month" name="filtro_valor" value="<?= htmlspecialchars($filtroValor) ?>" class="form-control">
+                <?php endif; ?>
+            </div>
+
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-primary w-100 fw-bold"><i class="bi bi-search me-1"></i> Aplicar Filtro</button>
+            </div>
+        </form>
+    </div>
+</div>
 
 <!-- TARJETAS DE RESUMEN DE INGRESOS -->
 <div class="row mb-4">
@@ -291,7 +351,7 @@ $totalIngresos = array_sum($totalesMetodo);
 <!-- TABLA DE DETALLE DE INGRESOS -->
 <div class="card shadow-sm">
     <div class="card-header bg-dark text-white fw-bold">
-        <i class="bi bi-journal-text me-1"></i> Entradas de Dinero Registradas
+        <i class="bi bi-journal-text me-1"></i> Entradas de Dinero Registradas (<?= count($ingresos) ?> registros)
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
@@ -310,7 +370,7 @@ $totalIngresos = array_sum($totalesMetodo);
                 </thead>
                 <tbody>
                     <?php if (empty($ingresos)): ?>
-                        <tr><td colspan="8" class="text-center py-3 text-muted">No se han registrado ingresos aún.</td></tr>
+                        <tr><td colspan="8" class="text-center py-3 text-muted">No se han registrado ingresos para el periodo seleccionado.</td></tr>
                     <?php else: ?>
                         <?php foreach ($ingresos as $ing): ?>
                             <tr>
@@ -433,6 +493,29 @@ $totalIngresos = array_sum($totalesMetodo);
 // Pasar datos PHP a JS para estructurar el Excel ordenado
 const datosIngresos = <?= json_encode($ingresos, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
 
+function cambiarTipoFiltro(valor) {
+    const contenedor = document.getElementById('contenedor_valor_filtro');
+    if (valor === 'todos') {
+        contenedor.style.display = 'none';
+    } else {
+        contenedor.style.display = 'block';
+        const label = document.getElementById('label_valor_filtro');
+        const inputContainer = contenedor.querySelector('input');
+        
+        // Reemplazar input según tipo para mantener la comodidad
+        if (valor === 'dia') {
+            label.textContent = 'Seleccionar Día:';
+            inputContainer.outerHTML = '<input type="date" name="filtro_valor" value="<?= date('Y-m-d') ?>" class="form-control">';
+        } else if (valor === 'ano') {
+            label.textContent = 'Seleccionar Año:';
+            inputContainer.outerHTML = '<input type="number" min="2020" max="2035" name="filtro_valor" value="<?= date('Y') ?>" class="form-control" placeholder="Ej. 2026">';
+        } else {
+            label.textContent = 'Seleccionar Mes:';
+            inputContainer.outerHTML = '<input type="month" name="filtro_valor" value="<?= date('Y-m') ?>" class="form-control">';
+        }
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     var modalEditar = document.getElementById('modalEditarRegistro');
     if (modalEditar) {
@@ -449,7 +532,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Exportar a Excel ORDENADO POR TIPO DE PAGO
+    // Exportar a Excel ORDENADO POR TIPO DE PAGO CON FILTRO ACTIVO
     document.getElementById('btnExportarIngresosExcel').addEventListener('click', function() {
         const datosEfectivo = [];
         const datosTransfer = [];
@@ -514,9 +597,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const ws = XLSX.utils.json_to_sheet(datosFinales);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Ingresos_Clasificados");
+        XLSX.utils.book_append_sheet(wb, ws, "Ingresos_Filtrados");
 
-        XLSX.writeFile(wb, "Reporte_Ingresos_Clasificado_" + new Date().toISOString().slice(0,10) + ".xlsx");
+        XLSX.writeFile(wb, "Reporte_Ingresos_" + (document.getElementById('filtro_tipo').value) + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
     });
 });
 </script>
