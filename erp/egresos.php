@@ -58,7 +58,25 @@ try {
     $proveedores = [];
 }
 
-// CONSULTA OPTIMIZADA: Evita duplicaciones visuales y rescata la relación con Proveedores y Entradas
+// --- PARÁMETROS DE FILTRADO TEMPORAL (Día, Mes o Año) ---
+$filtroTipo  = $_GET['filtro_tipo'] ?? 'todos'; // todos, dia, mes, ano
+$filtroValor = $_GET['filtro_valor'] ?? date('Y-m');
+
+$whereFiltroFecha = "";
+$paramsFiltro = [];
+
+if ($filtroTipo === 'dia' && !empty($filtroValor)) {
+    $whereFiltroFecha = " AND DATE(eg.fecha_pago) = ? ";
+    $paramsFiltro[] = $filtroValor;
+} elseif ($filtroTipo === 'mes' && !empty($filtroValor)) {
+    $whereFiltroFecha = " AND DATE_FORMAT(eg.fecha_pago, '%Y-%m') = ? ";
+    $paramsFiltro[] = $filtroValor;
+} elseif ($filtroTipo === 'ano' && !empty($filtroValor)) {
+    $whereFiltroFecha = " AND YEAR(eg.fecha_pago) = ? ";
+    $paramsFiltro[] = $filtroValor;
+}
+
+// CONSULTA OPTIMIZADA CON FILTRO APLICADO
 try {
     $sqlEgresos = "SELECT eg.*,
                         pr.nombre AS proveedor_nombre,
@@ -66,8 +84,11 @@ try {
                    FROM egresos eg
                    LEFT JOIN proveedores pr ON eg.proveedor_id = pr.id
                    LEFT JOIN entradas_inventario ei ON eg.entrada_id = ei.id
+                   WHERE 1=1 {$whereFiltroFecha}
                    ORDER BY eg.fecha_pago DESC, eg.id DESC";
-    $egresos = $pdo->query($sqlEgresos)->fetchAll(PDO::FETCH_ASSOC);
+    $stmtEg = $pdo->prepare($sqlEgresos);
+    $stmtEg->execute($paramsFiltro);
+    $egresos = $stmtEg->fetchAll(PDO::FETCH_ASSOC);
 } catch (\PDOException $e) {
     $egresos = [];
     $mensajeError = "Error al consultar los egresos: " . $e->getMessage();
@@ -110,9 +131,14 @@ foreach ($egresos as $e) {
             <h3 class="text-dark fw-bold mb-0">
                 <i class="bi bi-arrow-down-circle-fill text-danger me-2"></i> Módulo de Egresos y Salidas de Caja
             </h3>
-            <button id="btnExportarEgresosExcel" class="btn btn-success fw-bold shadow-sm">
-                <i class="bi bi-file-earmark-excel me-1"></i> Descargar Excel Clasificado
-            </button>
+            <div>
+                <button id="btnExportarEgresosExcel" class="btn btn-outline-success fw-bold shadow-sm me-2">
+                    <i class="bi bi-file-earmark-excel me-1"></i> Excel Clasificado General
+                </button>
+                <button id="btnExportarEfectivoEgresosExcel" class="btn btn-success fw-bold shadow-sm">
+                    <i class="bi bi-file-earmark-spreadsheet-fill me-1"></i> Descargar Excel SOLO Efectivo
+                </button>
+            </div>
         </div>
 
         <?php if ($mensajeExito): ?>
@@ -128,6 +154,41 @@ foreach ($egresos as $e) {
                 <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
+
+        <!-- PANEL DE FILTROS PARA ANÁLISIS POR DÍA, MES O AÑO -->
+        <div class="card shadow-sm mb-4 border-dark">
+            <div class="card-header bg-dark text-white fw-bold">
+                <i class="bi bi-funnel-fill me-1"></i> Filtros de Análisis Temporal (Día, Mes o Año)
+            </div>
+            <div class="card-body">
+                <form method="GET" action="egresos.php" class="row g-3 align-items-end">
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Tipo de Periodo:</label>
+                        <select name="filtro_tipo" id="filtro_tipo" class="form-select" onchange="cambiarTipoFiltro(this.value)">
+                            <option value="todos" <?= $filtroTipo === 'todos' ? 'selected' : '' ?>>Histórico Completo (Sin filtro)</option>
+                            <option value="dia" <?= $filtroTipo === 'dia' ? 'selected' : '' ?>>Día Específico</option>
+                            <option value="mes" <?= $filtroTipo === 'mes' ? 'selected' : '' ?>>Mes Específico</option>
+                            <option value="ano" <?= $filtroTipo === 'ano' ? 'selected' : '' ?>>Año Específico</option>
+                        </select>
+                    </div>
+
+                    <div class="col-md-5" id="contenedor_valor_filtro" style="<?= $filtroTipo === 'todos' ? 'display:none;' : '' ?>">
+                        <label class="form-label fw-bold" id="label_valor_filtro">Seleccionar Fecha:</label>
+                        <?php if ($filtroTipo === 'dia'): ?>
+                            <input type="date" name="filtro_valor" value="<?= htmlspecialchars($filtroValor) ?>" class="form-control">
+                        <?php elseif ($filtroTipo === 'ano'): ?>
+                            <input type="number" min="2020" max="2035" name="filtro_valor" value="<?= htmlspecialchars($filtroValor) ?>" class="form-control" placeholder="Ej. 2026">
+                        <?php else: ?>
+                            <input type="month" name="filtro_valor" value="<?= htmlspecialchars($filtroValor) ?>" class="form-control">
+                        <?php endif; ?>
+                    </div>
+
+                    <div class="col-md-3">
+                        <button type="submit" class="btn btn-primary w-100 fw-bold"><i class="bi bi-search me-1"></i> Aplicar Filtro</button>
+                    </div>
+                </form>
+            </div>
+        </div>
 
         <!-- TARJETAS METRICAS (Desglose total y por método de pago) -->
         <div class="row g-3 mb-4">
@@ -233,7 +294,7 @@ foreach ($egresos as $e) {
         <!-- TABLA DE HISTORIAL DE EGRESOS -->
         <div class="card border shadow-sm">
             <div class="card-header bg-dark text-white fw-bold">
-                <i class="bi bi-receipt me-2"></i> Historial de Salidas y Pagos Registrados
+                <i class="bi bi-receipt me-2"></i> Historial de Salidas y Pagos Registrados (<?= count($egresos) ?> registros)
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -252,7 +313,7 @@ foreach ($egresos as $e) {
                         <tbody>
                             <?php if (empty($egresos)): ?>
                                 <tr>
-                                    <td colspan="7" class="text-center py-4 text-muted">No hay salidas ni egresos registrados.</td>
+                                    <td colspan="7" class="text-center py-4 text-muted">No hay salidas ni egresos registrados para el periodo seleccionado.</td>
                                 </tr>
                             <?php else: ?>
                                 <?php foreach ($egresos as $e): ?>
@@ -297,6 +358,28 @@ foreach ($egresos as $e) {
 // Pasar datos PHP a JS para el Excel ordenado
 const datosEgresos = <?= json_encode($egresos, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
 
+function cambiarTipoFiltro(valor) {
+    const contenedor = document.getElementById('contenedor_valor_filtro');
+    if (valor === 'todos') {
+        contenedor.style.display = 'none';
+    } else {
+        contenedor.style.display = 'block';
+        const label = document.getElementById('label_valor_filtro');
+        const inputContainer = contenedor.querySelector('input');
+        
+        if (valor === 'dia') {
+            label.textContent = 'Seleccionar Día:';
+            inputContainer.outerHTML = '<input type="date" name="filtro_valor" value="<?= date('Y-m-d') ?>" class="form-control">';
+        } else if (valor === 'ano') {
+            label.textContent = 'Seleccionar Año:';
+            inputContainer.outerHTML = '<input type="number" min="2020" max="2035" name="filtro_valor" value="<?= date('Y') ?>" class="form-control" placeholder="Ej. 2026">';
+        } else {
+            label.textContent = 'Seleccionar Mes:';
+            inputContainer.outerHTML = '<input type="month" name="filtro_valor" value="<?= date('Y-m') ?>" class="form-control">';
+        }
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // 1. Prevención de doble Submit
     const formEgreso = document.getElementById('formEgreso');
@@ -309,7 +392,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // 2. Filtros de búsqueda instantánea
+    // 2. Filtros de búsqueda instantánea por texto
     const inputTexto = document.getElementById('filtroTexto');
     const selectMetodo = document.getElementById('filtroMetodo');
     const filas = document.querySelectorAll('#tablaEgresos tbody tr');
@@ -336,7 +419,7 @@ document.addEventListener('DOMContentLoaded', function() {
     inputTexto.addEventListener('keyup', filtrar);
     selectMetodo.addEventListener('change', filtrar);
 
-    // 3. Exportar a Excel ORDENADO por Efectivo, Transferencia y Tarjeta
+    // 3. Exportar Excel Clasificado General (Efectivo, Transferencia, Tarjeta)
     document.getElementById('btnExportarEgresosExcel').addEventListener('click', function() {
         const datosEfectivo = [];
         const datosTransfer = [];
@@ -364,7 +447,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const datosFinales = [];
 
-        // EFECTIVO
         datosFinales.push({"ID": "=== EGRESOS EN EFECTIVO ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
         let totalEfectivo = 0;
         datosEfectivo.forEach(f => {
@@ -374,7 +456,6 @@ document.addEventListener('DOMContentLoaded', function() {
         datosFinales.push({"ID": "SUBTOTAL EFECTIVO", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalEfectivo});
         datosFinales.push({});
 
-        // TRANSFERENCIAS
         datosFinales.push({"ID": "=== EGRESOS POR TRANSFERENCIA (SPEI) ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
         let totalTransfer = 0;
         datosTransfer.forEach(f => {
@@ -384,7 +465,6 @@ document.addEventListener('DOMContentLoaded', function() {
         datosFinales.push({"ID": "SUBTOTAL TRANSFERENCIAS", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalTransfer});
         datosFinales.push({});
 
-        // TARJETAS
         datosFinales.push({"ID": "=== EGRESOS POR TARJETA ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
         let totalTarjeta = 0;
         datosTarjeta.forEach(f => {
@@ -394,15 +474,53 @@ document.addEventListener('DOMContentLoaded', function() {
         datosFinales.push({"ID": "SUBTOTAL TARJETAS", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalTarjeta});
         datosFinales.push({});
 
-        // TOTAL GENERAL
         const totalGeneral = totalEfectivo + totalTransfer + totalTarjeta;
         datosFinales.push({"ID": ">>> TOTAL GENERAL DE EGRESOS <<<", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalGeneral});
 
         const ws = XLSX.utils.json_to_sheet(datosFinales);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Egresos_Clasificados");
+        XLSX.utils.book_append_sheet(wb, ws, "Egresos_General");
 
-        XLSX.writeFile(wb, "Reporte_Egresos_Clasificado_" + new Date().toISOString().slice(0,10) + ".xlsx");
+        XLSX.writeFile(wb, "Reporte_Egresos_General_" + (document.getElementById('filtro_tipo').value) + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    });
+
+    // 4. Exportar Excel EXCLUSIVO EFECTIVO CON FILTRO APLICADO
+    document.getElementById('btnExportarEfectivoEgresosExcel').addEventListener('click', function() {
+        const datosEfectivoSolo = [];
+        let totalEfectivoSolo = 0;
+
+        datosEgresos.forEach(item => {
+            const metodo = (item.metodo_pago || 'efectivo').toLowerCase();
+            if (metodo === 'efectivo') {
+                const fila = {
+                    "ID": item.id || '',
+                    "Fecha y Hora": item.fecha_pago || '',
+                    "Proveedor / Origen": item.proveedor_nombre || 'Gasto Directo',
+                    "Concepto": item.concepto || '',
+                    "Método Pago": "EFECTIVO",
+                    "Monto Salida ($)": parseFloat(item.monto || 0)
+                };
+                datosEfectivoSolo.push(fila);
+                totalEfectivoSolo += fila["Monto Salida ($)"];
+            }
+        });
+
+        const datosFinalesEfectivo = [];
+        datosFinalesEfectivo.push({"ID": "=== REPORTE EXCLUSIVO DE EGRESOS EN EFECTIVO ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
+        datosFinalesEfectivo.push({});
+        
+        datosEfectivoSolo.forEach(f => {
+            datosFinalesEfectivo.push(f);
+        });
+
+        datosFinalesEfectivo.push({});
+        datosFinalesEfectivo.push({"ID": "TOTAL ACUMULADO EFECTIVO", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": totalEfectivoSolo});
+
+        const wsEf = XLSX.utils.json_to_sheet(datosFinalesEfectivo);
+        const wbEf = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wbEf, wsEf, "Egresos_Efectivo");
+
+        XLSX.writeFile(wbEf, "Reporte_Egresos_Solo_Efectivo_" + (document.getElementById('filtro_tipo').value) + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
     });
 });
 </script>
