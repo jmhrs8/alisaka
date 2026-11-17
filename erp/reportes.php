@@ -157,16 +157,269 @@ try {
         $montoTotalCxP += floatval($pr['pendiente']);
     }
 } catch (\PDOException $e) {}
+
+// =========================================================================
+// 6. NUEVO: DETECCIÓN SEGURA DE TABLAS DE PRODUCTOS PARA TOP 50 Y ESTACIONALIDAD
+// =========================================================================
+$tablaDetalle = null;
+$colSalidaId  = 'salida_id';
+$colProdId    = 'producto_id';
+$colCant      = 'cantidad';
+$tablaProd    = null;
+$colProdNombre = 'nombre';
+$colProdCat    = null;
+
+try {
+    $tablasDB = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+    $posiblesDetalles = ['detalle_salidas', 'salidas_detalle', 'salida_detalles', 'ventas_detalle', 'detalle_ventas'];
+    foreach ($posiblesDetalles as $td) {
+        if (in_array($td, $tablasDB)) {
+            $tablaDetalle = $td;
+            $cols = $pdo->query("SHOW COLUMNS FROM `$td`")->fetchAll(PDO::FETCH_COLUMN);
+            if (in_array('id_salida', $cols)) $colSalidaId = 'id_salida';
+            if (in_array('id_producto', $cols)) $colProdId = 'id_producto';
+            if (in_array('cant', $cols)) $colCant = 'cant';
+            break;
+        }
+    }
+    $posiblesProductos = ['productos', 'inventario', 'articulos', 'catalogo'];
+    foreach ($posiblesProductos as $tp) {
+        if (in_array($tp, $tablasDB)) {
+            $tablaProd = $tp;
+            $colsP = $pdo->query("SHOW COLUMNS FROM `$tp`")->fetchAll(PDO::FETCH_COLUMN);
+            if (in_array('descripcion', $colsP) && !in_array('nombre', $colsP)) $colProdNombre = 'descripcion';
+            if (in_array('producto', $colsP) && !in_array('nombre', $colsP)) $colProdNombre = 'producto';
+            if (in_array('categoria', $colsP)) $colProdCat = 'categoria';
+            elseif (in_array('tipo', $colsP)) $colProdCat = 'tipo';
+            break;
+        }
+    }
+} catch (\PDOException $e) {}
+
+// 7. NUEVO: TOP 50 MEJORES CLIENTES (Consumo y Tipo de Producto Principal)
+$top50Clientes = [];
+try {
+    $sqlTop50 = "SELECT 
+                    s.cliente,
+                    COUNT(s.id) AS num_compras,
+                    SUM(COALESCE(s.monto_total, s.total, 0)) AS total_consumido,
+                    MAX(COALESCE(s.fecha, s.fecha_salida)) AS ultima_compra
+                 FROM salidas s
+                 WHERE s.cliente IS NOT NULL AND s.cliente != ''
+                 GROUP BY s.cliente
+                 ORDER BY total_consumido DESC
+                 LIMIT 50";
+    $top50Clientes = $pdo->query($sqlTop50)->fetchAll(PDO::FETCH_ASSOC);
+
+    // Enriquecer cada cliente con su producto/tipo más consumido
+    foreach ($top50Clientes as &$cli) {
+        $cli['producto_top'] = 'General / Varios';
+        if ($tablaDetalle && $tablaProd) {
+            try {
+                $campoTipo = $colProdCat ? "CONCAT(p.`$colProdNombre`, ' (', COALESCE(p.`$colProdCat`, 'Sin cat.'), ')')" : "p.`$colProdNombre`";
+                $sqlProdCli = "SELECT $campoTipo AS prod_info, SUM(d.`$colCant`) AS total_cant
+                               FROM salidas s
+                               INNER JOIN `$tablaDetalle` d ON s.id = d.`$colSalidaId`
+                               INNER JOIN `$tablaProd` p ON d.`$colProdId` = p.id
+                               WHERE s.cliente = :cli
+                               GROUP BY prod_info
+                               ORDER BY total_cant DESC
+                               LIMIT 1";
+                $stmtPC = $pdo->prepare($sqlProdCli);
+                $stmtPC->execute([':cli' => $cli['cliente']]);
+                if ($rowPC = $stmtPC->fetch(PDO::FETCH_ASSOC)) {
+                    $cli['producto_top'] = $rowPC['prod_info'] . " [" . number_format($rowPC['total_cant'], 0) . " uds]";
+                }
+            } catch (\PDOException $e) {}
+        } else {
+            // Fallback si los productos están guardados en columna directa de salidas
+            try {
+                $colsS = $pdo->query("SHOW COLUMNS FROM salidas")->fetchAll(PDO::FETCH_COLUMN);
+                $colDirecta = null;
+                foreach (['producto', 'descripcion', 'concepto', 'tipo_producto'] as $cd) {
+                    if (in_array($cd, $colsS)) { $colDirecta = $cd; break; }
+                }
+                if ($colDirecta) {
+                    $stmtDirect = $pdo->prepare("SELECT `$colDirecta` AS prod_info, COUNT(*) AS c FROM salidas WHERE cliente = :cli AND `$colDirecta` IS NOT NULL AND `$colDirecta` != '' GROUP BY `$colDirecta` ORDER BY c DESC LIMIT 1");
+                    $stmtDirect->execute([':cli' => $cli['cliente']]);
+                    if ($rowD = $stmtDirect->fetch(PDO::FETCH_ASSOC)) {
+                        $cli['producto_top'] = $rowD['prod_info'];
+                    }
+                }
+            } catch (\PDOException $e) {}
+        }
+    }
+    unset($cli);
+} catch (\PDOException $e) {}
+
+// 8. NUEVO: ANÁLISIS DE ESTACIONALIDAD MENSUAL (Temporada Alta vs Baja y Producto Líder)
+$nombresMeses = [
+    1 => 'Enero', 2 => 'Febrero', 3 => 'Marzo', 4 => 'Abril',
+    5 => 'Mayo', 6 => 'Junio', 7 => 'Julio', 8 => 'Agosto',
+    9 => 'Septiembre', 10 => 'Octubre', 11 => 'Noviembre', 12 => 'Diciembre'
+];
+
+$ventasPorMes = [];
+for ($m = 1; $m <= 12; $m++) {
+    $ventasPorMes[$m] = [
+        'mes_num' => $m,
+        'mes_nombre' => $nombresMeses[$m],
+        'total' => 0,
+        'operaciones' => 0,
+        'producto_lider' => 'Sin datos',
+        'clasificacion' => 'Normal'
+    ];
+}
+
+try {
+    $sqlEstacionalidad = "SELECT 
+                            MONTH(COALESCE(fecha, fecha_salida)) AS mes,
+                            SUM(COALESCE(monto_total, total, 0)) AS total_mes,
+                            COUNT(id) AS ops
+                          FROM salidas
+                          WHERE COALESCE(fecha, fecha_salida) IS NOT NULL
+                          GROUP BY MONTH(COALESCE(fecha, fecha_salida))";
+    $resEst = $pdo->query($sqlEstacionalidad)->fetchAll(PDO::FETCH_ASSOC);
+
+    $sumaAnual = 0;
+    $mesesConDatos = 0;
+    foreach ($resEst as $re) {
+        $m = intval($re['mes']);
+        if ($m >= 1 && $m <= 12) {
+            $ventasPorMes[$m]['total'] = floatval($re['total_mes']);
+            $ventasPorMes[$m]['operaciones'] = intval($re['ops']);
+            if ($ventasPorMes[$m]['total'] > 0) {
+                $sumaAnual += $ventasPorMes[$m]['total'];
+                $mesesConDatos++;
+            }
+        }
+    }
+
+    // Producto líder por cada mes
+    if ($tablaDetalle && $tablaProd) {
+        for ($m = 1; $m <= 12; $m++) {
+            $campoTipo = $colProdCat ? "CONCAT(p.`$colProdNombre`, ' (', COALESCE(p.`$colProdCat`, 'Cat.'), ')')" : "p.`$colProdNombre`";
+            $sqlProdMes = "SELECT $campoTipo AS prod_info, SUM(d.`$colCant`) AS cant_mes
+                           FROM salidas s
+                           INNER JOIN `$tablaDetalle` d ON s.id = d.`$colSalidaId`
+                           INNER JOIN `$tablaProd` p ON d.`$colProdId` = p.id
+                           WHERE MONTH(COALESCE(s.fecha, s.fecha_salida)) = $m
+                           GROUP BY prod_info
+                           ORDER BY cant_mes DESC
+                           LIMIT 1";
+            $rowPM = $pdo->query($sqlProdMes)->fetch(PDO::FETCH_ASSOC);
+            if ($rowPM) {
+                $ventasPorMes[$m]['producto_lider'] = $rowPM['prod_info'];
+            }
+        }
+    }
+
+    // Calcular umbrales de Temporada Alta y Temporada Baja
+    $promedioMensual = $mesesConDatos > 0 ? ($sumaAnual / $mesesConDatos) : 0;
+    $mesesTemporadaAlta = [];
+    $mesesTemporadaBaja = [];
+
+    foreach ($ventasPorMes as $m => &$datosM) {
+        if ($promedioMensual > 0) {
+            if ($datosM['total'] >= ($promedioMensual * 1.15)) {
+                $datosM['clasificacion'] = 'Temporada Alta';
+                $mesesTemporadaAlta[] = $m;
+            } elseif ($datosM['total'] > 0 && $datosM['total'] <= ($promedioMensual * 0.85)) {
+                $datosM['clasificacion'] = 'Temporada Baja';
+                $mesesTemporadaBaja[] = $m;
+            } elseif ($datosM['total'] == 0) {
+                $datosM['clasificacion'] = 'Temporada Baja';
+            }
+        }
+    }
+    unset($datosM);
+
+    // Lógica de Alerta Preventiva (Mes actual y Mes próximo)
+    $mesActualNum = intval(date('n'));
+    $mesProximoNum = ($mesActualNum == 12) ? 1 : ($mesActualNum + 1);
+    $alertaTemporada = null;
+
+    if (in_array($mesProximoNum, $mesesTemporadaAlta)) {
+        $alertaTemporada = [
+            'tipo' => 'warning',
+            'titulo' => '¡AVISO PREVENTIVO DE TEMPORADA ALTA PRÓXIMA!',
+            'mensaje' => "El próximo mes (<strong>{$nombresMeses[$mesProximoNum]}</strong>) está identificado históricamente como <strong>Temporada Alta</strong>. Se recomienda abastecer inventario y preparar logística, especialmente en: <strong>{$ventasPorMes[$mesProximoNum]['producto_lider']}</strong>."
+        ];
+    } elseif (in_array($mesActualNum, $mesesTemporadaAlta)) {
+        $alertaTemporada = [
+            'tipo' => 'success',
+            'titulo' => '¡ESTÁS EN TEMPORADA ALTA ACTUALMENTE!',
+            'mensaje' => "El mes en curso (<strong>{$nombresMeses[$mesActualNum]}</strong>) corresponde a un pico de <strong>Temporada Alta</strong>. Producto de mayor demanda en este periodo: <strong>{$ventasPorMes[$mesActualNum]['producto_lider']}</strong>."
+        ];
+    } elseif (in_array($mesProximoNum, $mesesTemporadaBaja)) {
+        $alertaTemporada = [
+            'tipo' => 'info',
+            'titulo' => 'Aviso de Estacionalidad: Próximo Mes de Temporada Baja',
+            'mensaje' => "El próximo mes (<strong>{$nombresMeses[$mesProximoNum]}</strong>) suele presentar menor demanda (<strong>Temporada Baja</strong>). Buen momento para campañas de reactivación con tus Top 50 clientes."
+        ];
+    }
+} catch (\PDOException $e) {}
 ?>
 
 <!-- Cargar Chart.js desde CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
+/* Estilos para evitar distorsión de gráficas en pantalla e impresión */
+.chart-container {
+    position: relative;
+    width: 100%;
+    height: 290px;
+    margin: auto;
+}
+.chart-container-wide {
+    position: relative;
+    width: 100%;
+    height: 320px;
+    margin: auto;
+}
+
 @media print {
-    .sidebar, .btn-print, header, nav, .card-filter { display: none !important; }
-    main { width: 100% !important; margin: 0 !important; }
-    .card { border: none !important; box-shadow: none !important; }
+    @page {
+        size: landscape;
+        margin: 10mm;
+    }
+    .sidebar, .btn-print, header, nav, .card-filter, .modal { display: none !important; }
+    main, .container, .container-fluid { 
+        width: 100% !important; 
+        max-width: 100% !important; 
+        margin: 0 !important; 
+        padding: 0 !important; 
+    }
+    .card { 
+        border: 1px solid #dee2e6 !important; 
+        box-shadow: none !important; 
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+        margin-bottom: 15px !important;
+    }
+    .row {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+    }
+    .chart-container, .chart-container-wide {
+        height: 250px !important;
+        max-width: 100% !important;
+        break-inside: avoid !important;
+    }
+    canvas {
+        max-width: 100% !important;
+        max-height: 240px !important;
+        width: auto !important;
+        height: auto !important;
+    }
+    table {
+        font-size: 11px !important;
+    }
+    tr {
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+    }
 }
 </style>
 
@@ -181,6 +434,19 @@ try {
 </div>
 
 <?= $mensajeConfig ?>
+
+<!-- ALERTA PREVENTIVA DE TEMPORADA ALTA / BAJA -->
+<?php if (!empty($alertaTemporada)): ?>
+<div class="alert alert-<?= $alertaTemporada['tipo'] ?> border-start border-4 shadow-sm mb-4" role="alert">
+    <div class="d-flex align-items-center">
+        <i class="bi bi-bell-fill fs-3 me-3"></i>
+        <div>
+            <h5 class="alert-heading mb-1 fw-bold"><?= $alertaTemporada['titulo'] ?></h5>
+            <p class="mb-0"><?= $alertaTemporada['mensaje'] ?></p>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
 
 <!-- MODAL CONFIGURACIÓN REPORTES AUTOMÁTICOS -->
 <div class="modal fade" id="modalConfigReportes" tabindex="-1" aria-hidden="true">
@@ -296,7 +562,7 @@ try {
     </div>
 </div>
 
-<!-- SECCIÓN DE GRÁFICAS -->
+<!-- SECCIÓN DE GRÁFICAS FINANCIERAS -->
 <div class="row mb-4">
     <div class="col-md-5">
         <div class="card shadow-sm h-100">
@@ -304,7 +570,9 @@ try {
                 <i class="bi bi-pie-chart-fill me-1"></i> Balance de Cobro (Cobrado vs. Pendiente)
             </div>
             <div class="card-body d-flex align-items-center justify-content-center">
-                <canvas id="chartEstadoPago" style="max-height: 280px;"></canvas>
+                <div class="chart-container">
+                    <canvas id="chartEstadoPago"></canvas>
+                </div>
             </div>
         </div>
     </div>
@@ -315,8 +583,103 @@ try {
                 <i class="bi bi-bar-chart-grouped me-1"></i> Ventas y Saldos por Cliente
             </div>
             <div class="card-body">
-                <canvas id="chartClientes" style="max-height: 280px;"></canvas>
+                <div class="chart-container">
+                    <canvas id="chartClientes"></canvas>
+                </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- NUEVA SECCIÓN: ESTACIONALIDAD (TEMPORADA ALTA VS BAJA Y PRODUCTO LÍDER) -->
+<div class="card shadow-sm mb-4 border-primary">
+    <div class="card-header bg-primary text-white fw-bold d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-calendar-range me-1"></i> Análisis de Estacionalidad: Temporada Alta vs. Temporada Baja</span>
+        <span class="badge bg-light text-dark">Promedio Mensual: $<?= number_format($promedioMensual ?? 0, 2) ?></span>
+    </div>
+    <div class="card-body">
+        <div class="row align-items-center">
+            <div class="col-lg-8">
+                <div class="chart-container-wide">
+                    <canvas id="chartEstacionalidad"></canvas>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="table-responsive" style="max-height: 320px; overflow-y: auto;">
+                    <table class="table table-sm table-bordered mb-0 align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Mes</th>
+                                <th>Temporada</th>
+                                <th>Producto Líder</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($ventasPorMes as $vm): 
+                                $badgeClass = 'bg-secondary';
+                                if ($vm['clasificacion'] === 'Temporada Alta') $badgeClass = 'bg-success';
+                                elseif ($vm['clasificacion'] === 'Temporada Baja') $badgeClass = 'bg-danger';
+                            ?>
+                                <tr>
+                                    <td class="fw-bold"><?= $vm['mes_nombre'] ?></td>
+                                    <td><span class="badge <?= $badgeClass ?>"><?= $vm['clasificacion'] ?></span></td>
+                                    <td class="small"><?= htmlspecialchars($vm['producto_lider']) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- NUEVA SECCIÓN: TOP 50 MEJORES CLIENTES Y TIPO DE PRODUCTO QUE CONSUMEN -->
+<div class="card shadow-sm mb-4 border-success">
+    <div class="card-header bg-success text-white fw-bold d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-trophy-fill me-1"></i> Top 50 Mejores Clientes y Producto de Mayor Consumo</span>
+        <span class="badge bg-light text-success">Histórico Acumulado</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover align-middle mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th class="text-center" style="width: 60px;">#</th>
+                        <th>Cliente</th>
+                        <th class="text-center">Compras Realizadas</th>
+                        <th>Producto / Categoría Principal Consumida</th>
+                        <th class="text-center">Última Compra</th>
+                        <th class="text-end">Consumo Total ($)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($top50Clientes)): ?>
+                        <tr><td colspan="6" class="text-center py-3 text-muted">Aún no hay suficientes datos históricos de clientes.</td></tr>
+                    <?php else: ?>
+                        <?php foreach ($top50Clientes as $idx => $topC): ?>
+                            <tr>
+                                <td class="text-center fw-bold">
+                                    <?php if ($idx === 0): ?>
+                                        <span class="badge bg-warning text-dark"><i class="bi bi-star-fill"></i> 1</span>
+                                    <?php elseif ($idx === 1): ?>
+                                        <span class="badge bg-secondary">2</span>
+                                    <?php elseif ($idx === 2): ?>
+                                        <span class="badge bg-danger">3</span>
+                                    <?php else: ?>
+                                        <?= $idx + 1 ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="fw-bold"><?= htmlspecialchars($topC['cliente']) ?></td>
+                                <td class="text-center"><span class="badge bg-info text-dark"><?= number_format($topC['num_compras']) ?></span></td>
+                                <td><i class="bi bi-box-seam text-primary me-1"></i> <?= htmlspecialchars($topC['producto_top']) ?></td>
+                                <td class="text-center text-muted small"><?= $topC['ultima_compra'] ? date('d/m/Y', strtotime($topC['ultima_compra'])) : '-' ?></td>
+                                <td class="text-end fw-bold text-success">$<?= number_format($topC['total_consumido'], 2) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
@@ -454,7 +817,7 @@ try {
 document.addEventListener("DOMContentLoaded", function () {
     // 1. Gráfica de Dona (Balance Pagado vs Pendiente)
     const ctxPie = document.getElementById('chartEstadoPago').getContext('2d');
-    new Chart(ctxPie, {
+    const chartPie = new Chart(ctxPie, {
         type: 'doughnut',
         data: {
             labels: ['Cobrado / Pagado', 'Pendiente por Cobrar'],
@@ -466,6 +829,7 @@ document.addEventListener("DOMContentLoaded", function () {
         },
         options: {
             responsive: true,
+            maintainAspectRatio: false,
             plugins: {
                 legend: { position: 'bottom' }
             }
@@ -478,7 +842,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const dataPagado = [<?php foreach($resumenClientes as $rc) echo $rc['total_pagado'] . ","; ?>];
     const dataPendiente = [<?php foreach($resumenClientes as $rc) echo $rc['total_pendiente'] . ","; ?>];
 
-    new Chart(ctxBar, {
+    const chartBar = new Chart(ctxBar, {
         type: 'bar',
         data: {
             labels: clientesLabels,
@@ -497,6 +861,7 @@ document.addEventListener("DOMContentLoaded", function () {
         },
         options: {
             responsive: true,
+            maintainAspectRatio: false,
             scales: {
                 x: { stacked: true },
                 y: { stacked: true, beginAtZero: true }
@@ -505,6 +870,66 @@ document.addEventListener("DOMContentLoaded", function () {
                 legend: { position: 'bottom' }
             }
         }
+    });
+
+    // 3. NUEVA GRÁFICA: Estacionalidad Mensual (Temporada Alta vs Baja)
+    const ctxEst = document.getElementById('chartEstacionalidad').getContext('2d');
+    const mesesLabels = [<?php foreach($ventasPorMes as $vm) echo "'" . $vm['mes_nombre'] . "',"; ?>];
+    const ventasMensuales = [<?php foreach($ventasPorMes as $vm) echo $vm['total'] . ","; ?>];
+    const productosLideres = [<?php foreach($ventasPorMes as $vm) echo "'" . addslashes($vm['producto_lider']) . "',"; ?>];
+    const clasificacionesMes = [<?php foreach($ventasPorMes as $vm) echo "'" . $vm['clasificacion'] . "',"; ?>];
+    const coloresEstacionalidad = [<?php 
+        foreach($ventasPorMes as $vm) {
+            if ($vm['clasificacion'] === 'Temporada Alta') echo "'#198754',";
+            elseif ($vm['clasificacion'] === 'Temporada Baja') echo "'#dc3545',";
+            else echo "'#0d6efd',";
+        }
+    ?>];
+
+    const chartEst = new Chart(ctxEst, {
+        type: 'bar',
+        data: {
+            labels: mesesLabels,
+            datasets: [{
+                label: 'Ventas Mensuales ($)',
+                data: ventasMensuales,
+                backgroundColor: coloresEstacionalidad,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true }
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        afterLabel: function(context) {
+                            const idx = context.dataIndex;
+                            return [
+                                'Estado: ' + clasificacionesMes[idx],
+                                'Producto Líder: ' + productosLideres[idx]
+                            ];
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Redimensionar gráficas limpiamente antes y después de imprimir para evitar distorsión
+    window.addEventListener('beforeprint', () => {
+        chartPie.resize();
+        chartBar.resize();
+        chartEst.resize();
+    });
+    window.addEventListener('afterprint', () => {
+        chartPie.resize();
+        chartBar.resize();
+        chartEst.resize();
     });
 });
 </script>
