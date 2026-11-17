@@ -178,11 +178,9 @@ if ($filtroTipo === 'dia' && !empty($filtroValor)) {
     $whereFiltroFecha = " AND DATE(fecha) = ? ";
     $paramsFiltro[] = $filtroValor;
 } elseif ($filtroTipo === 'mes' && !empty($filtroValor)) {
-    // $filtroValor viene formato 'YYYY-MM'
     $whereFiltroFecha = " AND DATE_FORMAT(fecha, '%Y-%m') = ? ";
     $paramsFiltro[] = $filtroValor;
 } elseif ($filtroTipo === 'ano' && !empty($filtroValor)) {
-    // $filtroValor viene formato 'YYYY'
     $whereFiltroFecha = " AND YEAR(fecha) = ? ";
     $paramsFiltro[] = $filtroValor;
 }
@@ -258,9 +256,14 @@ $totalIngresos = array_sum($totalesMetodo);
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-cash-coin text-success me-2"></i> Reporte de Ingresos y Cobros</h2>
-    <button id="btnExportarIngresosExcel" class="btn btn-success fw-bold shadow-sm">
-        <i class="bi bi-file-earmark-excel me-1"></i> Descargar Excel Clasificado y Filtrado
-    </button>
+    <div>
+        <button id="btnExportarIngresosExcel" class="btn btn-outline-success fw-bold shadow-sm me-2">
+            <i class="bi bi-file-earmark-excel me-1"></i> Excel Clasificado General
+        </button>
+        <button id="btnExportarEfectivoExcel" class="btn btn-success fw-bold shadow-sm">
+            <i class="bi bi-file-earmark-spreadsheet-fill me-1"></i> Descargar Excel SOLO Efectivo
+        </button>
+    </div>
 </div>
 
 <?php if ($mensajeExito): ?>
@@ -502,7 +505,6 @@ function cambiarTipoFiltro(valor) {
         const label = document.getElementById('label_valor_filtro');
         const inputContainer = contenedor.querySelector('input');
         
-        // Reemplazar input según tipo para mantener la comodidad
         if (valor === 'dia') {
             label.textContent = 'Seleccionar Día:';
             inputContainer.outerHTML = '<input type="date" name="filtro_valor" value="<?= date('Y-m-d') ?>" class="form-control">';
@@ -532,7 +534,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Exportar a Excel ORDENADO POR TIPO DE PAGO CON FILTRO ACTIVO
+    // 1. Exportar Excel Clasificado General (Efectivo, Transferencia, Tarjeta)
     document.getElementById('btnExportarIngresosExcel').addEventListener('click', function() {
         const datosEfectivo = [];
         const datosTransfer = [];
@@ -558,10 +560,8 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
 
-        // Construir arreglo unificado con separadores
         const datosFinales = [];
 
-        // 1. EFECTIVO
         datosFinales.push({"Fecha": "=== INGRESOS EN EFECTIVO ===", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": ""});
         let totalEfectivo = 0;
         datosEfectivo.forEach(f => {
@@ -569,9 +569,8 @@ document.addEventListener('DOMContentLoaded', function () {
             totalEfectivo += f["Total Cobrado"];
         });
         datosFinales.push({"Fecha": "SUBTOTAL EFECTIVO", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalEfectivo});
-        datosFinales.push({}); // Línea en blanco
+        datosFinales.push({});
 
-        // 2. TRANSFERENCIAS
         datosFinales.push({"Fecha": "=== INGRESOS POR TRANSFERENCIA (SPEI) ===", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": ""});
         let totalTransfer = 0;
         datosTransfer.forEach(f => {
@@ -579,9 +578,8 @@ document.addEventListener('DOMContentLoaded', function () {
             totalTransfer += f["Total Cobrado"];
         });
         datosFinales.push({"Fecha": "SUBTOTAL TRANSFERENCIAS", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalTransfer});
-        datosFinales.push({}); // Línea en blanco
+        datosFinales.push({});
 
-        // 3. TARJETAS
         datosFinales.push({"Fecha": "=== INGRESOS POR TARJETA ===", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": ""});
         let totalTarjeta = 0;
         datosTarjeta.forEach(f => {
@@ -589,17 +587,55 @@ document.addEventListener('DOMContentLoaded', function () {
             totalTarjeta += f["Total Cobrado"];
         });
         datosFinales.push({"Fecha": "SUBTOTAL TARJETAS", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalTarjeta});
-        datosFinales.push({}); // Línea en blanco
+        datosFinales.push({});
 
-        // TOTAL GENERAL
         const totalGeneral = totalEfectivo + totalTransfer + totalTarjeta;
         datosFinales.push({"Fecha": ">>> TOTAL GENERAL DE INGRESOS <<<", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalGeneral});
 
         const ws = XLSX.utils.json_to_sheet(datosFinales);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Ingresos_Filtrados");
+        XLSX.utils.book_append_sheet(wb, ws, "Ingresos_General");
 
-        XLSX.writeFile(wb, "Reporte_Ingresos_" + (document.getElementById('filtro_tipo').value) + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
+        XLSX.writeFile(wb, "Reporte_Ingresos_General_" + (document.getElementById('filtro_tipo').value) + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    });
+
+    // 2. Exportar Excel EXCLUSIVO EFECTIVO CON FILTRO APLICADO
+    document.getElementById('btnExportarEfectivoExcel').addEventListener('click', function() {
+        const datosEfectivoSolo = [];
+        let totalEfectivoSolo = 0;
+
+        datosIngresos.forEach(item => {
+            const metodo = (item.metodo_pago || 'efectivo').toLowerCase();
+            if (metodo === 'efectivo') {
+                const fila = {
+                    "Fecha": item.fecha || '',
+                    "Concepto / Cliente": item.concepto || '',
+                    "Forma de Pago": "EFECTIVO",
+                    "Subtotal": parseFloat(item.subtotal || 0),
+                    "IVA": parseFloat(item.iva || 0),
+                    "Total Cobrado": parseFloat(item.total || 0)
+                };
+                datosEfectivoSolo.push(fila);
+                totalEfectivoSolo += fila["Total Cobrado"];
+            }
+        });
+
+        const datosFinalesEfectivo = [];
+        datosFinalesEfectivo.push({"Fecha": "=== REPORTE EXCLUSIVO DE INGRESOS EN EFECTIVO ===", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": ""});
+        datosFinalesEfectivo.push({});
+        
+        datosEfectivoSolo.forEach(f => {
+            datosFinalesEfectivo.push(f);
+        });
+
+        datosFinalesEfectivo.push({});
+        datosFinalesEfectivo.push({"Fecha": "TOTAL ACUMULADO EFECTIVO", "Concepto / Cliente": "", "Forma de Pago": "", "Subtotal": "", "IVA": "", "Total Cobrado": totalEfectivoSolo});
+
+        const wsEf = XLSX.utils.json_to_sheet(datosFinalesEfectivo);
+        const wbEf = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wbEf, wsEf, "Ingresos_Efectivo");
+
+        XLSX.writeFile(wbEf, "Reporte_Solo_Efectivo_" + (document.getElementById('filtro_tipo').value) + "_" + new Date().toISOString().slice(0,10) + ".xlsx");
     });
 });
 </script>
