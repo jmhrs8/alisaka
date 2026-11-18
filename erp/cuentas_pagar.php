@@ -308,7 +308,7 @@ $cantProveedoresAcreedores = count($proveedoresAcreedores);
                         </select>
                     </div>
 
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <label class="form-label fw-bold">Concepto / Descripción:</label>
                         <input type="text" name="concepto" class="form-control" placeholder="Ej. Factura A-123" required>
                     </div>
@@ -319,11 +319,21 @@ $cantProveedoresAcreedores = count($proveedoresAcreedores);
                     </div>
 
                     <div class="col-md-2">
-                        <label class="form-label fw-bold">Vencimiento:</label>
-                        <input type="date" name="fecha_vencimiento" class="form-control">
+                        <label class="form-label fw-bold">Plazo Automático:</label>
+                        <select id="plazo_dias_nuevo" class="form-select" onchange="calcularVencimiento('nuevo')">
+                            <option value="">-- Manual / Libre --</option>
+                            <option value="30">30 Días</option>
+                            <option value="60">60 Días</option>
+                            <option value="90">90 Días</option>
+                        </select>
                     </div>
 
-                    <div class="col-md-2">
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">Vencimiento (Calendario):</label>
+                        <input type="date" id="fecha_vencimiento_nuevo" name="fecha_vencimiento" class="form-control">
+                    </div>
+
+                    <div class="col-md-12">
                         <label class="form-label fw-bold">Comprobante:</label>
                         <input type="file" name="comprobante" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.webp,.xml">
                     </div>
@@ -475,8 +485,17 @@ $cantProveedoresAcreedores = count($proveedoresAcreedores);
                                                                         <input type="number" step="0.01" min="0.01" name="monto" class="form-control" value="<?= htmlspecialchars($monto, ENT_QUOTES, 'UTF-8') ?>" required>
                                                                     </div>
                                                                     <div class="mb-3">
-                                                                        <label class="form-label fw-bold">Fecha Vencimiento:</label>
-                                                                        <input type="date" name="fecha_vencimiento" class="form-control" value="<?= htmlspecialchars($c['fecha_vencimiento'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
+                                                                        <label class="form-label fw-bold">Plazo Automático:</label>
+                                                                        <select id="plazo_dias_edit_<?= $c['id'] ?>" class="form-select" onchange="calcularVencimiento('edit_<?= $c['id'] ?>')">
+                                                                            <option value="">-- Manual / Libre --</option>
+                                                                            <option value="30">30 Días</option>
+                                                                            <option value="60">60 Días</option>
+                                                                            <option value="90">90 Días</option>
+                                                                        </select>
+                                                                    </div>
+                                                                    <div class="mb-3">
+                                                                        <label class="form-label fw-bold">Fecha Vencimiento (Calendario):</label>
+                                                                        <input type="date" id="fecha_vencimiento_edit_<?= $c['id'] ?>" name="fecha_vencimiento" class="form-control" value="<?= htmlspecialchars($c['fecha_vencimiento'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
                                                                     </div>
                                                                     <div class="mb-3">
                                                                         <label class="form-label fw-bold">Comprobante:</label>
@@ -542,6 +561,27 @@ $cantProveedoresAcreedores = count($proveedoresAcreedores);
 </div>
 
 <script>
+// Función para calcular automáticamente la fecha de vencimiento según los días seleccionados (30, 60 o 90)
+function calcularVencimiento(sufijo) {
+    const selectPlazo = document.getElementById('plazo_dias_' + sufijo);
+    const inputFecha = document.getElementById('fecha_vencimiento_' + sufijo);
+    
+    if (!selectPlazo || !inputFecha) return;
+    
+    const dias = parseInt(selectPlazo.value);
+    if (!isNaN(dias) && dias > 0) {
+        const fechaActual = new Date();
+        fechaActual.setDate(fechaActual.getDate() + dias);
+        
+        // Formatear a YYYY-MM-DD para el input type="date"
+        const anio = fechaActual.getFullYear();
+        const mes = String(fechaActual.getMonth() + 1).padStart(2, '0');
+        const dia = String(fechaActual.getDate()).padStart(2, '0');
+        
+        inputFecha.value = `${anio}-${mes}-${dia}`;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const inputTexto = document.getElementById('filtroTabla');
     const selectEstatus = document.getElementById('filtroEstatus');
