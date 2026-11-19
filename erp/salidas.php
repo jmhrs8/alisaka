@@ -15,49 +15,55 @@ $mensajeError = '';
 
 $usuarioId = $_SESSION['user_id'] ?? $_SESSION['usuario_id'] ?? 1;
 
-// 1. REGISTRAR NUEVA SALIDA / VENTA
+// 1. REGISTRAR NUEVA SALIDA / VENTA (SOPORTA MÚLTIPLES PRODUCTOS EN EL MISMO TICKET)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
-    $productoId        = intval($_POST['producto_id'] ?? 0);
-    $clienteNombre     = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
-    $modalidadVenta    = $_POST['modalidad_venta'] ?? 'unidad'; // 'unidad' o 'empaque'
-    $cantidadIngresada = floatval($_POST['cantidad'] ?? 0);
-    $precioIngresado   = floatval($_POST['precio_venta'] ?? 0);
-    $estadoCobro       = $_POST['estado_cobro'] ?? 'cobrado';
-    $fechaVencimiento  = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
-    $metodoCobro       = $_POST['metodo_cobro'] ?? 'efectivo';
-    $requiereFactura   = isset($_POST['requiere_factura']) ? 1 : 0;
-    $facturaUrl        = null;
+    $clienteNombre    = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
+    $estadoCobro      = $_POST['estado_cobro'] ?? 'cobrado';
+    $fechaVencimiento = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
+    $metodoCobro      = $_POST['metodo_cobro'] ?? 'efectivo';
+    $requiereFactura  = isset($_POST['requiere_factura']) ? 1 : 0;
+    $facturaUrl       = null;
 
-    if ($productoId > 0 && $cantidadIngresada > 0 && $precioIngresado >= 0) {
+    // Recibir arreglo de ítems del ticket (o fallback a un solo producto si se envía directo)
+    $itemsJson = $_POST['items_ticket_json'] ?? '';
+    $itemsTicket = [];
+
+    if (!empty($itemsJson)) {
+        $decoded = json_decode($itemsJson, true);
+        if (is_array($decoded)) {
+            $itemsTicket = $decoded;
+        }
+    }
+
+    if (empty($itemsTicket) && !empty($_POST['producto_id'])) {
+        $itemsTicket[] = [
+            'producto_id'     => intval($_POST['producto_id']),
+            'modalidad_venta' => $_POST['modalidad_venta'] ?? 'unidad',
+            'cantidad'        => floatval($_POST['cantidad'] ?? 0),
+            'precio_venta'    => floatval($_POST['precio_venta'] ?? 0),
+        ];
+    }
+
+    // Filtrar ítems válidos
+    $itemsValidos = [];
+    foreach ($itemsTicket as $it) {
+        $pId   = intval($it['producto_id'] ?? 0);
+        $cant  = floatval($it['cantidad'] ?? 0);
+        $prec  = floatval($it['precio_venta'] ?? 0);
+        $mod   = ($it['modalidad_venta'] ?? 'unidad') === 'empaque' ? 'empaque' : 'unidad';
+        if ($pId > 0 && $cant > 0 && $prec >= 0) {
+            $itemsValidos[] = [
+                'producto_id'     => $pId,
+                'modalidad_venta' => $mod,
+                'cantidad'        => $cant,
+                'precio_venta'    => $prec,
+            ];
+        }
+    }
+
+    if (!empty($itemsValidos)) {
         try {
             $pdo->beginTransaction();
-
-            // Consultar datos del producto e información de empaque
-            $stmtP = $pdo->prepare("SELECT id, nombre, stock_actual, tipo_unidad, unidades_por_empaque FROM productos WHERE id = ? FOR UPDATE");
-            $stmtP->execute([$productoId]);
-            $producto = $stmtP->fetch(PDO::FETCH_ASSOC);
-
-            if (!$producto) {
-                throw new Exception("El producto seleccionado no existe.");
-            }
-
-            $unidadesPorEmpaque = floatval($producto['unidades_por_empaque'] ?? 1);
-            if ($unidadesPorEmpaque <= 0) $unidadesPorEmpaque = 1;
-
-            // Calcular cantidad real a descontar del inventario base
-            if ($modalidadVenta === 'empaque') {
-                $cantidadBaseDescontar = $cantidadIngresada * $unidadesPorEmpaque;
-                $precioUnitarioBase   = $precioIngresado / $unidadesPorEmpaque;
-            } else {
-                $cantidadBaseDescontar = $cantidadIngresada;
-                $precioUnitarioBase   = $precioIngresado;
-            }
-
-            $stockDisponible = floatval($producto['stock_actual'] ?? 0);
-
-            if ($stockDisponible < $cantidadBaseDescontar) {
-                throw new Exception("Stock insuficiente. Disponible: " . number_format($stockDisponible, 2) . " unidades base.");
-            }
 
             // Subida de comprobante
             if (isset($_FILES['comprobante']) && $_FILES['comprobante']['error'] === UPLOAD_ERR_OK) {
@@ -75,10 +81,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 }
             }
 
-            // Cálculo de totales
-            $subtotal = $cantidadIngresada * $precioIngresado;
-            $iva = $requiereFactura ? ($subtotal * 0.16) : 0.00;
-            $total = $subtotal + $iva;
+            $subtotalGeneral = 0.0;
+            $detallesPreparados = [];
+            $nombresResumen = [];
+
+            foreach ($itemsValidos as $item) {
+                $stmtP = $pdo->prepare("SELECT id, nombre, stock_actual, tipo_unidad, unidades_por_empaque FROM productos WHERE id = ? FOR UPDATE");
+                $stmtP->execute([$item['producto_id']]);
+                $producto = $stmtP->fetch(PDO::FETCH_ASSOC);
+
+                if (!$producto) {
+                    throw new Exception("Uno de los productos seleccionados no existe (ID #{$item['producto_id']}).");
+                }
+
+                $unidadesPorEmpaque = floatval($producto['unidades_por_empaque'] ?? 1);
+                if ($unidadesPorEmpaque <= 0) $unidadesPorEmpaque = 1;
+
+                if ($item['modalidad_venta'] === 'empaque') {
+                    $cantidadBaseDescontar = $item['cantidad'] * $unidadesPorEmpaque;
+                    $precioUnitarioBase   = $item['precio_venta'] / $unidadesPorEmpaque;
+                } else {
+                    $cantidadBaseDescontar = $item['cantidad'];
+                    $precioUnitarioBase   = $item['precio_venta'];
+                }
+
+                $stockDisponible = floatval($producto['stock_actual'] ?? 0);
+                if ($stockDisponible < $cantidadBaseDescontar) {
+                    throw new Exception("Stock insuficiente para '{$producto['nombre']}'. Disponible: " . number_format($stockDisponible, 2) . " unidades base.");
+                }
+
+                $subtotalItem = $item['cantidad'] * $item['precio_venta'];
+                $subtotalGeneral += $subtotalItem;
+
+                $detallesPreparados[] = [
+                    'producto_id'            => $item['producto_id'],
+                    'nombre'                 => $producto['nombre'],
+                    'cantidad_ingresada'     => $item['cantidad'],
+                    'precio_ingresado'       => $item['precio_venta'],
+                    'cantidad_base'          => $cantidadBaseDescontar,
+                    'precio_unitario_base'   => $precioUnitarioBase,
+                    'subtotal_item'          => $subtotalItem,
+                ];
+
+                $nombresResumen[] = $producto['nombre'] . " (" . $item['cantidad'] . ")";
+            }
+
+            $ivaTotal = $requiereFactura ? ($subtotalGeneral * 0.16) : 0.00;
+            $totalGeneral = $subtotalGeneral + $ivaTotal;
             $tipoPago = ($estadoCobro === 'credito') ? 'credito' : 'contado';
 
             // Insertar encabezado de Salida
@@ -89,10 +138,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
             $stmtIns->execute([
                 $usuarioId,
                 $clienteNombre,
-                $subtotal,
-                $iva,
-                $total,
-                $total,
+                $subtotalGeneral,
+                $ivaTotal,
+                $totalGeneral,
+                $totalGeneral,
                 $estadoCobro,
                 $fechaVencimiento,
                 $metodoCobro,
@@ -105,26 +154,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
 
             $salidaId = $pdo->lastInsertId();
 
-            // Insertar en detalle_salidas (desglosando la venta base)
             $stmtDet = $pdo->prepare("INSERT INTO detalle_salidas
                 (salida_id, producto_id, cantidad, precio_unitario, subtotal)
                 VALUES (?, ?, ?, ?, ?)");
-            $stmtDet->execute([
-                $salidaId,
-                $productoId,
-                $cantidadBaseDescontar,
-                $precioUnitarioBase,
-                $subtotal
-            ]);
 
-            // Descontar inventario base real
             $stmtUpdStk = $pdo->prepare("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?");
-            $stmtUpdStk->execute([$cantidadBaseDescontar, $productoId]);
+
+            foreach ($detallesPreparados as $det) {
+                $stmtDet->execute([
+                    $salidaId,
+                    $det['producto_id'],
+                    $det['cantidad_base'],
+                    $det['precio_unitario_base'],
+                    $det['subtotal_item']
+                ]);
+
+                $stmtUpdStk->execute([
+                    $det['cantidad_base'],
+                    $det['producto_id']
+                ]);
+            }
 
             // Registrar en INGRESOS
             if ($estadoCobro === 'cobrado') {
-                $conceptoIngreso = "Venta / Salida #" . $salidaId . " - " . $producto['nombre'] . " (" . $clienteNombre . ")" . ($requiereFactura ? " [Facturado 16% IVA]" : "");
+                $resumenStr = implode(', ', $nombresResumen);
+                if (mb_strlen($resumenStr) > 180) {
+                    $resumenStr = mb_substr($resumenStr, 0, 177) . '...';
+                }
+                $conceptoIngreso = "Venta / Salida #" . $salidaId . " - " . $resumenStr . " (" . $clienteNombre . ")" . ($requiereFactura ? " [Facturado 16% IVA]" : "");
 
+                $primerDet = $detallesPreparados[0];
                 $stmtIng = $pdo->prepare("INSERT INTO ingresos
                     (salida_id, usuario_id, producto_id, cantidad, costo_unitario, concepto, monto_subtotal, monto_iva, monto_total, metodo_pago, comprobante_url, fecha)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
@@ -132,13 +191,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 $stmtIng->execute([
                     $salidaId,
                     $usuarioId,
-                    $productoId,
-                    $cantidadBaseDescontar,
-                    $precioUnitarioBase,
+                    $primerDet['producto_id'],
+                    $primerDet['cantidad_base'],
+                    $primerDet['precio_unitario_base'],
                     $conceptoIngreso,
-                    $subtotal,
-                    $iva,
-                    $total,
+                    $subtotalGeneral,
+                    $ivaTotal,
+                    $totalGeneral,
                     $metodoCobro,
                     $facturaUrl
                 ]);
@@ -153,13 +212,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
                 $stmtCxC->execute([
                     $salidaId,
                     $clienteNombre,
-                    $total,
+                    $totalGeneral,
                     $fechaVencimiento
                 ]);
             }
 
             $pdo->commit();
-            $mensajeExito = "Salida / Venta #" . $salidaId . " registrada exitosamente. Total: $" . number_format($total, 2);
+            $mensajeExito = "Salida / Venta #" . $salidaId . " (" . count($detallesPreparados) . " producto(s)) registrada exitosamente. Total: $" . number_format($totalGeneral, 2);
         } catch (Exception $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -167,21 +226,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guardar_salida'])) {
             $mensajeError = "Error al registrar la salida: " . $e->getMessage();
         }
     } else {
-        $mensajeError = "Por favor completa los campos requeridos con datos válidos.";
+        $mensajeError = "Agrega al menos un producto válido al ticket antes de guardar la salida.";
     }
 }
 
 // 2. PROCESAR EDICIÓN DE SALIDA / VENTA
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_editar_salida'])) {
-    $salidaId        = intval($_POST['salida_id'] ?? 0);
-    $clienteNombre   = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
-    $nuevaCantidad   = floatval($_POST['cantidad'] ?? 0);
-    $nuevoPrecio     = floatval($_POST['precio_venta'] ?? 0);
-    $estadoCobro     = $_POST['estado_cobro'] ?? 'cobrado';
+    $salidaId         = intval($_POST['salida_id'] ?? 0);
+    $clienteNombre    = !empty(trim($_POST['cliente'] ?? '')) ? trim($_POST['cliente']) : 'Público General';
+    $nuevaCantidad    = floatval($_POST['cantidad'] ?? 0);
+    $nuevoPrecio      = floatval($_POST['precio_venta'] ?? 0);
+    $estadoCobro      = $_POST['estado_cobro'] ?? 'cobrado';
     $fechaVencimiento = ($estadoCobro === 'credito' && !empty($_POST['fecha_vencimiento'])) ? $_POST['fecha_vencimiento'] : null;
-    $metodoCobro     = $_POST['metodo_cobro'] ?? 'efectivo';
-    $requiereFactura = isset($_POST['requiere_factura']) ? 1 : 0;
-    $fecha           = $_POST['fecha'] ?? '';
+    $metodoCobro      = $_POST['metodo_cobro'] ?? 'efectivo';
+    $requiereFactura  = isset($_POST['requiere_factura']) ? 1 : 0;
+    $fecha            = $_POST['fecha'] ?? '';
 
     if ($salidaId > 0 && $nuevaCantidad > 0 && $nuevoPrecio >= 0) {
         try {
@@ -349,13 +408,17 @@ try {
     $mensajeError = "Error al consultar catálogo de productos: " . $e->getMessage();
 }
 
-// Cargar Historial
+// Cargar Historial (agrupando múltiples productos si la salida tiene más de uno)
 $salidas = [];
 try {
-    $sqlSalidas = "SELECT s.*, ds.producto_id, ds.cantidad, ds.precio_unitario, p.nombre AS producto_nombre
+    $sqlSalidas = "SELECT s.*,
+                          GROUP_CONCAT(CONCAT(COALESCE(p.nombre, 'Varios / N/A'), ' (', FORMAT(ds.cantidad, 2), ')') SEPARATOR ', ') AS producto_nombre,
+                          COALESCE(SUM(ds.cantidad), 0) AS cantidad,
+                          CASE WHEN COUNT(ds.id) = 1 THEN MAX(ds.precio_unitario) ELSE NULL END AS precio_unitario
                    FROM salidas s
                    LEFT JOIN detalle_salidas ds ON s.id = ds.salida_id
                    LEFT JOIN productos p ON ds.producto_id = p.id
+                   GROUP BY s.id
                    ORDER BY s.id DESC";
     $stmtSal = $pdo->query($sqlSalidas);
     if ($stmtSal) {
@@ -442,20 +505,21 @@ foreach ($salidas as $s) {
     </div>
 <?php endif; ?>
 
-<!-- FORMULARIO REGISTRAR SALIDA CON PREVISUALIZADOR INTEGRADO -->
+<!-- FORMULARIO REGISTRAR SALIDA CON MULTI-PRODUCTO Y PREVISUALIZADOR INTEGRADO -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-dark text-white fw-bold">
         <i class="bi bi-dash-circle me-1"></i> Registrar Nueva Salida
     </div>
     <div class="card-body">
-        <form method="POST" action="salidas.php" enctype="multipart/form-data" class="row g-3">
+        <form method="POST" action="salidas.php" id="formSalida" enctype="multipart/form-data" class="row g-3">
             <input type="hidden" name="guardar_salida" value="1">
+            <input type="hidden" name="items_ticket_json" id="items_ticket_json" value="[]">
 
             <!-- LADO IZQUIERDO: FORMULARIO DE CAPTURA -->
             <div class="col-lg-7 row g-3 m-0 p-0 pe-lg-3 border-end">
                 <div class="col-md-6">
                     <label class="form-label fw-bold">Producto (*):</label>
-                    <select name="producto_id" id="select_producto" class="form-select" required>
+                    <select name="producto_id" id="select_producto" class="form-select">
                         <option value="" data-precio="" data-stock="0" data-unidad="Pieza" data-empaque="1">-- Seleccionar Producto --</option>
                         <?php if (!empty($productos)): ?>
                             <?php foreach ($productos as $p): ?>
@@ -500,15 +564,46 @@ foreach ($salidas as $s) {
 
                 <div class="col-md-3">
                     <label class="form-label fw-bold" id="lbl_input_cantidad">Cantidad (*):</label>
-                    <input type="number" step="0.01" min="0.01" name="cantidad" id="input_cantidad" class="form-control" placeholder="0.00" required>
+                    <input type="number" step="0.01" min="0.01" name="cantidad" id="input_cantidad" class="form-control" placeholder="0.00">
                 </div>
 
                 <div class="col-md-3">
                     <label class="form-label fw-bold" id="lbl_input_precio">Precio ($) (*):</label>
-                    <input type="number" step="0.01" min="0" name="precio_venta" id="input_precio_venta" class="form-control" placeholder="0.00" required>
+                    <input type="number" step="0.01" min="0" name="precio_venta" id="input_precio_venta" class="form-control" placeholder="0.00">
                 </div>
 
-                <div class="col-md-6">
+                <!-- BOTÓN PARA AGREGAR MÚLTIPLES PRODUCTOS AL MISMO TICKET -->
+                <div class="col-12">
+                    <button type="button" class="btn btn-primary fw-bold" id="btnAgregarItem">
+                        <i class="bi bi-plus-circle me-1"></i> Agregar Producto al Ticket
+                    </button>
+                </div>
+
+                <!-- TABLA DE PRODUCTOS AGREGADOS AL TICKET -->
+                <div class="col-12">
+                    <div class="table-responsive border rounded">
+                        <table class="table table-sm table-striped align-middle mb-0" id="tablaItemsTicket">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Producto</th>
+                                    <th class="text-end">Cant.</th>
+                                    <th class="text-end">Precio</th>
+                                    <th class="text-end">Importe</th>
+                                    <th class="text-center" style="width: 50px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbodyItemsTicket">
+                                <tr id="filaVaciaTicket">
+                                    <td colspan="5" class="text-center text-muted py-2 small">
+                                        Sin productos agregados aún (puedes agregar uno o varios al mismo ticket).
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="col-md-4">
                     <label class="form-label fw-bold">Estatus del Cobro (*):</label>
                     <select name="estado_cobro" id="select_estado_cobro" class="form-select" required>
                         <option value="cobrado">Cobrado (Contado)</option>
@@ -516,7 +611,18 @@ foreach ($salidas as $s) {
                     </select>
                 </div>
 
-                <div class="col-md-6 d-none" id="div_fecha_vencimiento">
+                <!-- PLAZO AUTOMÁTICO (30, 60, 90 DÍAS) + CALENDARIO CUANDO ES A CRÉDITO -->
+                <div class="col-md-4 d-none" id="div_plazo_vencimiento">
+                    <label class="form-label fw-bold text-danger"><i class="bi bi-clock-history me-1"></i> Plazo Crédito:</label>
+                    <select id="select_plazo_vencimiento" class="form-select border-danger">
+                        <option value="">-- Manual / Libre --</option>
+                        <option value="30">30 Días</option>
+                        <option value="60">60 Días</option>
+                        <option value="90">90 Días</option>
+                    </select>
+                </div>
+
+                <div class="col-md-4 d-none" id="div_fecha_vencimiento">
                     <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Vencimiento Crédito (*):</label>
                     <input type="date" name="fecha_vencimiento" id="input_fecha_vencimiento" class="form-control border-danger">
                 </div>
@@ -535,7 +641,7 @@ foreach ($salidas as $s) {
                     <input type="file" name="comprobante" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.webp,.xml">
                 </div>
 
-                <div class="col-12 mt-3">
+                <div class="col-12 mt-2">
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" name="requiere_factura" id="requiere_factura" value="1">
                         <label class="form-check-label fw-bold" for="requiere_factura">
@@ -545,7 +651,7 @@ foreach ($salidas as $s) {
                 </div>
 
                 <!-- TOTALES EN TIEMPO REAL -->
-                <div class="col-12 bg-light p-3 rounded border mt-3">
+                <div class="col-12 bg-light p-3 rounded border mt-2">
                     <div class="row text-center">
                         <div class="col-4">
                             <span class="text-muted d-block small">Subtotal:</span>
@@ -579,6 +685,7 @@ foreach ($salidas as $s) {
                         <div><strong>Fecha:</strong> <span id="pv_fecha"><?= date('d/m/Y H:i') ?></span></div>
                         <div><strong>Cliente:</strong> <span id="pv_cliente">Público General</span></div>
                         <div><strong>Pago:</strong> <span id="pv_pago">Efectivo (Cobrado)</span></div>
+                        <div id="pv_venc_row" style="display: none;"><strong>Vence:</strong> <span id="pv_venc">-</span></div>
                     </div>
                     <table style="width: 100%; border-collapse: collapse; font-size: 0.75rem; margin-bottom: 8px;">
                         <thead>
@@ -588,14 +695,9 @@ foreach ($salidas as $s) {
                                 <th style="text-align: right;">Total</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="pv_items_tbody">
                             <tr>
-                                <td colspan="3" id="pv_producto" style="padding-top: 4px; font-weight: bold;">-- Selecciona producto --</td>
-                            </tr>
-                            <tr style="border-bottom: 1px dashed #ccc;">
-                                <td id="pv_cant" style="padding-bottom: 4px;">0.00</td>
-                                <td id="pv_pu" style="text-align: right; padding-bottom: 4px;">$0.00</td>
-                                <td id="pv_importe" style="text-align: right; padding-bottom: 4px;">$0.00</td>
+                                <td colspan="3" style="padding: 6px 0; text-align: center; color: #666;">-- Sin productos --</td>
                             </tr>
                         </tbody>
                     </table>
@@ -688,7 +790,9 @@ foreach ($salidas as $s) {
                                 <td><?= htmlspecialchars($s['producto_nombre'] ?? 'Varios / N/A') ?></td>
                                 <td><?= htmlspecialchars($s['cliente'] ?? 'Público General') ?></td>
                                 <td class="text-end fw-bold"><?= number_format(floatval($s['cantidad'] ?? 0), 2) ?></td>
-                                <td class="text-end">$<?= number_format(floatval($s['precio_unitario'] ?? 0), 2) ?></td>
+                                <td class="text-end">
+                                    <?= ($s['precio_unitario'] !== null) ? '$' . number_format(floatval($s['precio_unitario']), 2) : '<span class="text-muted small">Varios</span>' ?>
+                                </td>
                                 <td class="text-end">$<?= number_format($subtotalMostrar, 2) ?></td>
                                 <td class="text-end text-muted">$<?= number_format($ivaMostrar, 2) ?></td>
                                 <td class="text-end fw-bold text-success">$<?= number_format($totalMostrar, 2) ?></td>
@@ -798,7 +902,7 @@ foreach ($salidas as $s) {
                         <input type="datetime-local" name="fecha" id="edit_fecha" class="form-control">
                     </div>
 
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                         <label class="form-label fw-bold">Estatus del Cobro (*):</label>
                         <select name="estado_cobro" id="edit_estado_cobro" class="form-select" required>
                             <option value="cobrado">Cobrado (Contado)</option>
@@ -806,7 +910,17 @@ foreach ($salidas as $s) {
                         </select>
                     </div>
 
-                    <div class="col-md-6 d-none" id="edit_div_vencimiento">
+                    <div class="col-md-4 d-none" id="edit_div_plazo">
+                        <label class="form-label fw-bold text-danger"><i class="bi bi-clock-history me-1"></i> Plazo Crédito:</label>
+                        <select id="edit_select_plazo" class="form-select border-danger">
+                            <option value="">-- Manual / Libre --</option>
+                            <option value="30">30 Días</option>
+                            <option value="60">60 Días</option>
+                            <option value="90">90 Días</option>
+                        </select>
+                    </div>
+
+                    <div class="col-md-4 d-none" id="edit_div_vencimiento">
                         <label class="form-label fw-bold text-danger"><i class="bi bi-calendar-event me-1"></i> Fecha Vencimiento Crédito:</label>
                         <input type="date" name="fecha_vencimiento" id="edit_fecha_vencimiento" class="form-control border-danger">
                     </div>
@@ -846,6 +960,7 @@ foreach ($salidas as $s) {
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    const formSalida       = document.getElementById('formSalida');
     const selectProducto   = document.getElementById('select_producto');
     const selectModalidad  = document.getElementById('select_modalidad_venta');
     const optEmpaque       = document.getElementById('opt_empaque');
@@ -854,8 +969,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const inputCliente     = document.getElementById('input_cliente');
     const chkFactura       = document.getElementById('requiere_factura');
 
+    const btnAgregarItem   = document.getElementById('btnAgregarItem');
+    const tbodyItems       = document.getElementById('tbodyItemsTicket');
+    const inputItemsJson   = document.getElementById('items_ticket_json');
+
     const selectEstadoCobro = document.getElementById('select_estado_cobro');
     const selectMetodoCobro = document.getElementById('select_metodo_cobro');
+    const divPlazo          = document.getElementById('div_plazo_vencimiento');
+    const selectPlazo       = document.getElementById('select_plazo_vencimiento');
     const divVencimiento    = document.getElementById('div_fecha_vencimiento');
     const inputVencimiento  = document.getElementById('input_fecha_vencimiento');
 
@@ -870,39 +991,113 @@ document.addEventListener('DOMContentLoaded', function() {
     const lblTotal         = document.getElementById('lbl_total');
 
     // Elementos de la previsualización del ticket en tiempo real
-    const pvCliente  = document.getElementById('pv_cliente');
-    const pvPago     = document.getElementById('pv_pago');
-    const pvProducto = document.getElementById('pv_producto');
-    const pvCant     = document.getElementById('pv_cant');
-    const pvPu       = document.getElementById('pv_pu');
-    const pvImporte  = document.getElementById('pv_importe');
-    const pvSubtotal = document.getElementById('pv_subtotal');
-    const pvIva      = document.getElementById('pv_iva');
-    const pvTotal    = document.getElementById('pv_total');
+    const pvCliente    = document.getElementById('pv_cliente');
+    const pvPago       = document.getElementById('pv_pago');
+    const pvVencRow    = document.getElementById('pv_venc_row');
+    const pvVenc       = document.getElementById('pv_venc');
+    const pvItemsTbody = document.getElementById('pv_items_tbody');
+    const pvSubtotal   = document.getElementById('pv_subtotal');
+    const pvIva        = document.getElementById('pv_iva');
+    const pvTotal      = document.getElementById('pv_total');
+
+    let itemsTicket = [];
+
+    function calcularFechaMasDias(dias) {
+        const d = parseInt(dias, 10);
+        if (isNaN(d) || d <= 0) return '';
+        const fecha = new Date();
+        fecha.setDate(fecha.getDate() + d);
+        const anio = fecha.getFullYear();
+        const mes = String(fecha.getMonth() + 1).padStart(2, '0');
+        const dia = String(fecha.getDate()).padStart(2, '0');
+        return `${anio}-${mes}-${dia}`;
+    }
 
     function toggleVencimiento() {
         if (selectEstadoCobro && selectEstadoCobro.value === 'credito') {
-            divVencimiento.classList.remove('d-none');
-            inputVencimiento.setAttribute('required', 'required');
-        } else if (divVencimiento) {
-            divVencimiento.classList.add('d-none');
-            inputVencimiento.removeAttribute('required');
-            inputVencimiento.value = '';
+            if (divPlazo) divPlazo.classList.remove('d-none');
+            if (divVencimiento) divVencimiento.classList.remove('d-none');
+            if (inputVencimiento) inputVencimiento.setAttribute('required', 'required');
+        } else {
+            if (divPlazo) divPlazo.classList.add('d-none');
+            if (selectPlazo) selectPlazo.value = '';
+            if (divVencimiento) divVencimiento.classList.add('d-none');
+            if (inputVencimiento) {
+                inputVencimiento.removeAttribute('required');
+                inputVencimiento.value = '';
+            }
         }
+        renderizarTodo();
     }
 
     if (selectEstadoCobro) {
         selectEstadoCobro.addEventListener('change', toggleVencimiento);
     }
 
-    function calcularTotales() {
-        const cantidad        = parseFloat(inputCantidad.value) || 0;
-        const precio          = parseFloat(inputPrecio.value) || 0;
-        const requiereFactura = chkFactura.checked;
+    if (selectPlazo) {
+        selectPlazo.addEventListener('change', function() {
+            const nuevaFecha = calcularFechaMasDias(this.value);
+            if (nuevaFecha && inputVencimiento) {
+                inputVencimiento.value = nuevaFecha;
+                renderizarTodo();
+            }
+        });
+    }
 
-        const subtotal = cantidad * precio;
-        const iva      = requiereFactura ? (subtotal * 0.16) : 0;
-        const total    = subtotal + iva;
+    function obtenerItemBorrador() {
+        const pId = parseInt(selectProducto.value || '0', 10);
+        const cant = parseFloat(inputCantidad.value || '0');
+        const prec = parseFloat(inputPrecio.value || '0');
+        if (pId > 0 && cant > 0 && prec >= 0) {
+            const opt = selectProducto.options[selectProducto.selectedIndex];
+            const nombre = opt.getAttribute('data-nombre') || 'Producto';
+            const mod = selectModalidad.value === 'empaque' ? 'empaque' : 'unidad';
+            const unidad = opt.getAttribute('data-unidad') || 'Pieza';
+            const etiqCant = mod === 'empaque' ? `${cant} ${unidad}(s)` : `${cant} unid(s)`;
+            return {
+                producto_id: pId,
+                nombre: nombre,
+                modalidad_venta: mod,
+                cantidad: cant,
+                precio_venta: prec,
+                etiq_cant: etiqCant,
+                importe: cant * prec
+            };
+        }
+        return null;
+    }
+
+    function renderizarTodo() {
+        // Actualizar tabla de ítems agregados
+        tbodyItems.innerHTML = '';
+        if (itemsTicket.length === 0) {
+            tbodyItems.innerHTML = `<tr id="filaVaciaTicket"><td colspan="5" class="text-center text-muted py-2 small">Sin productos agregados aún (puedes agregar uno o varios al mismo ticket).</td></tr>`;
+        } else {
+            itemsTicket.forEach((it, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><small class="fw-bold">${it.nombre}</small></td>
+                    <td class="text-end small">${it.etiq_cant}</td>
+                    <td class="text-end small">$${it.precio_venta.toFixed(2)}</td>
+                    <td class="text-end small fw-bold">$${it.importe.toFixed(2)}</td>
+                    <td class="text-center">
+                        <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" onclick="quitarItemTicket(${idx})" title="Quitar">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </td>
+                `;
+                tbodyItems.appendChild(tr);
+            });
+        }
+
+        // Guardar JSON oculto (si no hay ítems agregados pero sí un borrador válido, incluirlo)
+        const listaEfectiva = itemsTicket.length > 0 ? itemsTicket : (obtenerItemBorrador() ? [obtenerItemBorrador()] : []);
+        inputItemsJson.value = JSON.stringify(itemsTicket.length > 0 ? itemsTicket : []);
+
+        const subtotal = listaEfectiva.reduce((acc, item) => acc + item.importe, 0);
+        const requiereFactura = chkFactura.checked;
+        const iva = requiereFactura ? (subtotal * 0.16) : 0;
+        const total = subtotal + iva;
 
         const subtotalFmt = '$' + subtotal.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const ivaFmt      = '$' + iva.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -913,20 +1108,79 @@ document.addEventListener('DOMContentLoaded', function() {
         lblTotal.textContent    = totalFmt;
 
         // Actualizar vista previa del Ticket en vivo
-        const selectedOption = selectProducto.options[selectProducto.selectedIndex];
-        const prodNombre = selectedOption ? (selectedOption.getAttribute('data-nombre') || '-- Selecciona producto --') : '-- Selecciona producto --';
         const clienteTxt = inputCliente.value.trim() !== '' ? inputCliente.value.trim() : 'Público General';
         const metodoTxt  = selectMetodoCobro.options[selectMetodoCobro.selectedIndex].text + (selectEstadoCobro.value === 'credito' ? ' (Crédito)' : ' (Cobrado)');
 
-        pvCliente.textContent  = clienteTxt;
-        pvPago.textContent     = metodoTxt;
-        pvProducto.textContent = prodNombre;
-        pvCant.textContent     = cantidad.toFixed(2);
-        pvPu.textContent       = '$' + precio.toFixed(2);
-        pvImporte.textContent  = subtotalFmt;
+        pvCliente.textContent = clienteTxt;
+        pvPago.textContent    = metodoTxt;
+
+        if (selectEstadoCobro.value === 'credito' && inputVencimiento && inputVencimiento.value) {
+            pvVencRow.style.display = 'block';
+            pvVenc.textContent = inputVencimiento.value;
+        } else {
+            pvVencRow.style.display = 'none';
+            pvVenc.textContent = '-';
+        }
+
+        pvItemsTbody.innerHTML = '';
+        if (listaEfectiva.length === 0) {
+            pvItemsTbody.innerHTML = `<tr><td colspan="3" style="padding: 6px 0; text-align: center; color: #666;">-- Sin productos --</td></tr>`;
+        } else {
+            listaEfectiva.forEach(item => {
+                const trProd = document.createElement('tr');
+                trProd.innerHTML = `<td colspan="3" style="padding-top: 4px; font-weight: bold;">${item.nombre}</td>`;
+                const trDet = document.createElement('tr');
+                trDet.style.borderBottom = '1px dashed #ccc';
+                trDet.innerHTML = `
+                    <td style="padding-bottom: 4px;">${item.cantidad.toFixed(2)}</td>
+                    <td style="text-align: right; padding-bottom: 4px;">$${item.precio_venta.toFixed(2)}</td>
+                    <td style="text-align: right; padding-bottom: 4px;">$${item.importe.toFixed(2)}</td>
+                `;
+                pvItemsTbody.appendChild(trProd);
+                pvItemsTbody.appendChild(trDet);
+            });
+        }
+
         pvSubtotal.textContent = subtotalFmt;
         pvIva.textContent      = ivaFmt;
         pvTotal.textContent    = totalFmt;
+    }
+
+    window.quitarItemTicket = function(index) {
+        itemsTicket.splice(index, 1);
+        renderizarTodo();
+    };
+
+    if (btnAgregarItem) {
+        btnAgregarItem.addEventListener('click', function() {
+            const borrador = obtenerItemBorrador();
+            if (!borrador) {
+                alert("Selecciona un producto, ingresa una cantidad mayor a 0 y un precio válido para agregarlo al ticket.");
+                return;
+            }
+            itemsTicket.push(borrador);
+            // Limpiar selección rápida para seguir agregando más productos
+            selectProducto.value = '';
+            cardStock.classList.add('d-none');
+            inputCantidad.value = '';
+            inputPrecio.value = '';
+            renderizarTodo();
+        });
+    }
+
+    if (formSalida) {
+        formSalida.addEventListener('submit', function(e) {
+            if (itemsTicket.length === 0) {
+                const borrador = obtenerItemBorrador();
+                if (!borrador) {
+                    e.preventDefault();
+                    alert("Agrega al menos un producto al ticket o completa los campos de producto, cantidad y precio.");
+                    return;
+                }
+                itemsTicket.push(borrador);
+            }
+            inputItemsJson.value = JSON.stringify(itemsTicket);
+        });
     }
 
     function actualizarModalidadVenta() {
@@ -948,7 +1202,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('lbl_input_precio').textContent   = "Precio Unitario ($) (*):";
         }
 
-        calcularTotales();
+        renderizarTodo();
     }
 
     if (selectProducto) {
@@ -986,37 +1240,51 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 cardStock.classList.add('d-none');
                 inputPrecio.value = '';
-                calcularTotales();
+                renderizarTodo();
             }
         });
     }
 
     if (selectModalidad)   selectModalidad.addEventListener('change', actualizarModalidadVenta);
-    if (inputCantidad)     inputCantidad.addEventListener('input', calcularTotales);
-    if (inputPrecio)       inputPrecio.addEventListener('input', calcularTotales);
-    if (inputCliente)      inputCliente.addEventListener('input', calcularTotales);
-    if (chkFactura)        chkFactura.addEventListener('change', calcularTotales);
-    if (selectEstadoCobro) selectEstadoCobro.addEventListener('change', calcularTotales);
-    if (selectMetodoCobro) selectMetodoCobro.addEventListener('change', calcularTotales);
+    if (inputCantidad)     inputCantidad.addEventListener('input', renderizarTodo);
+    if (inputPrecio)       inputPrecio.addEventListener('input', renderizarTodo);
+    if (inputCliente)      inputCliente.addEventListener('input', renderizarTodo);
+    if (chkFactura)        chkFactura.addEventListener('change', renderizarTodo);
+    if (selectMetodoCobro) selectMetodoCobro.addEventListener('change', renderizarTodo);
+    if (inputVencimiento)  inputVencimiento.addEventListener('change', renderizarTodo);
 
     // Modal Editar Salida
     var modalEditar = document.getElementById('modalEditarSalida');
     const editEstadoCobro  = document.getElementById('edit_estado_cobro');
+    const editDivPlazo     = document.getElementById('edit_div_plazo');
+    const editSelectPlazo  = document.getElementById('edit_select_plazo');
     const editDivVenc      = document.getElementById('edit_div_vencimiento');
     const editInputVenc    = document.getElementById('edit_fecha_vencimiento');
 
     function toggleEditVencimiento() {
         if (editEstadoCobro && editEstadoCobro.value === 'credito') {
-            editDivVenc.classList.remove('d-none');
-            editInputVenc.setAttribute('required', 'required');
-        } else if (editDivVenc) {
-            editDivVenc.classList.add('d-none');
-            editInputVenc.removeAttribute('required');
+            if (editDivPlazo) editDivPlazo.classList.remove('d-none');
+            if (editDivVenc) editDivVenc.classList.remove('d-none');
+            if (editInputVenc) editInputVenc.setAttribute('required', 'required');
+        } else {
+            if (editDivPlazo) editDivPlazo.classList.add('d-none');
+            if (editSelectPlazo) editSelectPlazo.value = '';
+            if (editDivVenc) editDivVenc.classList.add('d-none');
+            if (editInputVenc) editInputVenc.removeAttribute('required');
         }
     }
 
     if (editEstadoCobro) {
         editEstadoCobro.addEventListener('change', toggleEditVencimiento);
+    }
+
+    if (editSelectPlazo) {
+        editSelectPlazo.addEventListener('change', function() {
+            const nuevaFecha = calcularFechaMasDias(this.value);
+            if (nuevaFecha && editInputVenc) {
+                editInputVenc.value = nuevaFecha;
+            }
+        });
     }
 
     if (modalEditar) {
@@ -1031,6 +1299,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const estadoVal = button.getAttribute('data-estado');
             editEstadoCobro.value = estadoVal;
+            if (editSelectPlazo) editSelectPlazo.value = '';
             editInputVenc.value   = button.getAttribute('data-vencimiento') || '';
             toggleEditVencimiento();
 
@@ -1039,6 +1308,8 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('edit_requiere_factura').checked = (button.getAttribute('data-factura') === '1');
         });
     }
+
+    renderizarTodo();
 });
 
 // Función para imprimir la vista previa del ticket
