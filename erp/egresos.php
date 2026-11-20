@@ -1,22 +1,32 @@
 <?php
 require_once 'includes/header.php';
 
-$mensajeExito = '';
-$mensajeError = '';
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+$mensajeExito = $_SESSION['mensajeExito'] ?? '';
+$mensajeError = $_SESSION['mensajeError'] ?? '';
+unset($_SESSION['mensajeExito'], $_SESSION['mensajeError']);
 
 // Helper para limpiar comprobantes
 function borrarComprobanteLocal(?string $path): void {
-    if (!empty($path) && file_exists($path)) {
-        @unlink($path);
+    if (!empty($path)) {
+        $rutaLimpia = ltrim($path, '/');
+        if (file_exists($rutaLimpia) && is_file($rutaLimpia)) {
+            @unlink($rutaLimpia);
+        } elseif (file_exists(__DIR__ . '/' . $rutaLimpia) && is_file(__DIR__ . '/' . $rutaLimpia)) {
+            @unlink(__DIR__ . '/' . $rutaLimpia);
+        }
     }
 }
 
 // 1. REGISTRAR EGRESO DIRECTO / MANUAL
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['crear_egreso'])) {
-    $proveedorId = !empty($_POST['proveedor_id']) ? intval($_POST['proveedor_id']) : null;
-    $concepto    = trim($_POST['concepto'] ?? '');
-    $monto       = floatval($_POST['monto'] ?? 0);
-    $metodoPago  = $_POST['metodo_pago'] ?? 'efectivo';
+    $proveedorId    = !empty($_POST['proveedor_id']) ? intval($_POST['proveedor_id']) : null;
+    $concepto       = trim($_POST['concepto'] ?? '');
+    $monto          = floatval($_POST['monto'] ?? 0);
+    $metodoPago     = $_POST['metodo_pago'] ?? 'efectivo';
     $comprobanteUrl = null;
 
     if ($monto > 0 && !empty($concepto)) {
@@ -25,7 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['crear_egreso'])) {
                 $ext = strtolower(pathinfo($_FILES['comprobante']['name'], PATHINFO_EXTENSION));
                 $permitidas = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'xml'];
 
-                if (in_array($ext, $permitidas)) {
+                if (in_array($ext, $permitidas, true)) {
                     $dirSubida = 'uploads/comprobantes_egresos/';
                     if (!is_dir($dirSubida)) {
                         mkdir($dirSubida, 0777, true);
@@ -42,12 +52,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['crear_egreso'])) {
                 VALUES (?, ?, ?, ?, ?, ?, NOW())");
             $stmtIns->execute([$proveedorId, $concepto, $monto, $metodoPago, $tipoComprobante, $comprobanteUrl]);
 
-            $mensajeExito = "Egreso registrado correctamente.";
+            $_SESSION['mensajeExito'] = "Egreso registrado correctamente.";
+            header("Location: egresos.php");
+            exit;
         } catch (\PDOException $e) {
-            $mensajeError = "Error al registrar el egreso: " . $e->getMessage();
+            if (!empty($comprobanteUrl)) {
+                borrarComprobanteLocal($comprobanteUrl);
+            }
+            $_SESSION['mensajeError'] = "Error al registrar el egreso: " . $e->getMessage();
+            header("Location: egresos.php");
+            exit;
         }
     } else {
-        $mensajeError = "Por favor ingresa un concepto y un monto mayor a cero.";
+        $_SESSION['mensajeError'] = "Por favor ingresa un concepto y un monto mayor a cero.";
+        header("Location: egresos.php");
+        exit;
+    }
+}
+
+// 2. ELIMINAR EGRESO / PAGO REGISTRADO POR ERROR
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_egreso'])) {
+    $egresoId = intval($_POST['egreso_id'] ?? 0);
+
+    if ($egresoId > 0) {
+        try {
+            $pdo->beginTransaction();
+
+            $stmtBusq = $pdo->prepare("SELECT id, comprobante_url FROM egresos WHERE id = ? FOR UPDATE");
+            $stmtBusq->execute([$egresoId]);
+            $egresoActual = $stmtBusq->fetch(PDO::FETCH_ASSOC);
+
+            if (!$egresoActual) {
+                throw new Exception("El egreso seleccionado no existe o ya fue eliminado.");
+            }
+
+            $stmtDel = $pdo->prepare("DELETE FROM egresos WHERE id = ?");
+            $stmtDel->execute([$egresoId]);
+
+            $pdo->commit();
+
+            if (!empty($egresoActual['comprobante_url'])) {
+                borrarComprobanteLocal($egresoActual['comprobante_url']);
+            }
+
+            $_SESSION['mensajeExito'] = "Egreso #{$egresoId} eliminado correctamente.";
+            header("Location: egresos.php");
+            exit;
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            $_SESSION['mensajeError'] = "Error al eliminar el egreso: " . $e->getMessage();
+            header("Location: egresos.php");
+            exit;
+        }
+    } else {
+        $_SESSION['mensajeError'] = "Identificador de egreso inválido.";
+        header("Location: egresos.php");
+        exit;
     }
 }
 
@@ -308,12 +370,13 @@ foreach ($egresos as $e) {
                                 <th>Método Pago</th>
                                 <th>Monto Salida</th>
                                 <th class="text-center">Comprobante</th>
+                                <th class="text-center">Acción</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php if (empty($egresos)): ?>
                                 <tr>
-                                    <td colspan="7" class="text-center py-4 text-muted">No hay salidas ni egresos registrados para el periodo seleccionado.</td>
+                                    <td colspan="8" class="text-center py-4 text-muted">No hay salidas ni egresos registrados para el periodo seleccionado.</td>
                                 </tr>
                             <?php else: ?>
                                 <?php foreach ($egresos as $e): ?>
@@ -342,6 +405,15 @@ foreach ($egresos as $e) {
                                                 <span class="text-muted small">-</span>
                                             <?php endif; ?>
                                         </td>
+                                        <td class="text-center">
+                                            <form method="POST" action="egresos.php" class="d-inline" onsubmit="return confirm('¿Seguro que deseas eliminar el egreso #<?= $e['id'] ?> por $<?= number_format(floatval($e['monto']), 2) ?>? Esta acción no se puede deshacer.');">
+                                                <input type="hidden" name="eliminar_egreso" value="1">
+                                                <input type="hidden" name="egreso_id" value="<?= $e['id'] ?>">
+                                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Eliminar Egreso">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            </form>
+                                        </td>
                                     </tr>
                                 <?php endforeach; ?>
                             <?php endif; ?>
@@ -366,7 +438,7 @@ function cambiarTipoFiltro(valor) {
         contenedor.style.display = 'block';
         const label = document.getElementById('label_valor_filtro');
         const inputContainer = contenedor.querySelector('input');
-        
+
         if (valor === 'dia') {
             label.textContent = 'Seleccionar Día:';
             inputContainer.outerHTML = '<input type="date" name="filtro_valor" value="<?= date('Y-m-d') ?>" class="form-control">';
@@ -508,7 +580,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const datosFinalesEfectivo = [];
         datosFinalesEfectivo.push({"ID": "=== REPORTE EXCLUSIVO DE EGRESOS EN EFECTIVO ===", "Fecha y Hora": "", "Proveedor / Origen": "", "Concepto": "", "Método Pago": "", "Monto Salida ($)": ""});
         datosFinalesEfectivo.push({});
-        
+
         datosEfectivoSolo.forEach(f => {
             datosFinalesEfectivo.push(f);
         });
