@@ -26,8 +26,11 @@ function procesarSubidaRFC($fileInput, $directorioUpload, $archivoAntiguo = null
 
             if (move_uploaded_file($fileTmpPath, $destPath)) {
                 // Eliminar archivo antiguo si existe
-                if ($archivoAntiguo && file_exists($directorioUpload . $archivoAntiguo)) {
-                    @unlink($directorioUpload . $archivoAntiguo);
+                if ($archivoAntiguo) {
+                    $archivoAntiguoLimpio = basename($archivoAntiguo);
+                    if (file_exists($directorioUpload . $archivoAntiguoLimpio)) {
+                        @unlink($directorioUpload . $archivoAntiguoLimpio);
+                    }
                 }
                 return $nuevoNombreArchivo;
             } else {
@@ -37,7 +40,7 @@ function procesarSubidaRFC($fileInput, $directorioUpload, $archivoAntiguo = null
             throw new Exception("Formato de archivo de RFC no permitido. Solo se admiten PDF, JPG y PNG.");
         }
     }
-    return $archivoAntiguo; // Retorna el anterior si no se subió uno nuevo
+    return $archivoAntiguo ? basename($archivoAntiguo) : null; // Retorna el anterior si no se subió uno nuevo
 }
 
 // 1. REGISTRAR PROVEEDOR
@@ -79,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editar_proveedor'])) 
     $direccion     = trim($_POST['direccion'] ?? '');
     $banco         = trim($_POST['banco'] ?? '');
     $numero_cuenta = trim($_POST['numero_cuenta'] ?? '');
-    $archivoActual = $_POST['rfc_archivo_actual'] ?? null;
+    $archivoActual = !empty($_POST['rfc_archivo_actual']) ? basename($_POST['rfc_archivo_actual']) : null;
 
     if ($id > 0 && !empty($nombre)) {
         try {
@@ -121,8 +124,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eliminar_proveedor'])
             $stmtDel = $pdo->prepare("DELETE FROM proveedores WHERE id = ?");
             $stmtDel->execute([$id]);
 
-            if ($archivoRfc && file_exists($directorioUpload . $archivoRfc)) {
-                @unlink($directorioUpload . $archivoRfc);
+            if ($archivoRfc) {
+                $archivoRfcLimpio = basename($archivoRfc);
+                if (file_exists($directorioUpload . $archivoRfcLimpio)) {
+                    @unlink($directorioUpload . $archivoRfcLimpio);
+                }
             }
 
             $mensajeExito = "Proveedor eliminado correctamente.";
@@ -244,15 +250,22 @@ try {
                         <tr><td colspan="11" class="text-center py-3 text-muted">No hay proveedores registrados aún.</td></tr>
                     <?php else: ?>
                         <?php foreach ($proveedores as $prov): ?>
+                            <?php
+                                $rfcNombreLimpio = !empty($prov['rfc_archivo']) ? basename($prov['rfc_archivo']) : '';
+                                $rfcRutaCompleta = ($rfcNombreLimpio !== '') ? ($directorioUpload . $rfcNombreLimpio) : '';
+                                $rfcExisteEnDisco = ($rfcRutaCompleta !== '' && file_exists($rfcRutaCompleta) && is_file($rfcRutaCompleta));
+                            ?>
                             <tr>
                                 <td><?= $prov['id'] ?></td>
                                 <td class="fw-bold"><?= htmlspecialchars($prov['nombre']) ?></td>
                                 <td><?= htmlspecialchars($prov['rfc'] ?? 'N/A') ?></td>
                                 <td class="text-center">
-                                    <?php if (!empty($prov['rfc_archivo'])): ?>
-                                        <a href="<?= $directorioUpload . htmlspecialchars($prov['rfc_archivo']) ?>" target="_blank" class="btn btn-sm btn-outline-info" title="Ver RFC">
+                                    <?php if ($rfcExisteEnDisco): ?>
+                                        <a href="<?= htmlspecialchars($rfcRutaCompleta, ENT_QUOTES, 'UTF-8') ?>" target="_blank" class="btn btn-sm btn-outline-info" title="Ver RFC">
                                             <i class="bi bi-file-earmark-pdf-fill"></i> Ver
                                         </a>
+                                    <?php elseif ($rfcNombreLimpio !== ''): ?>
+                                        <span class="badge bg-warning text-dark" title="Archivo no encontrado en servidor">Archivo faltante</span>
                                     <?php else: ?>
                                         <span class="text-muted small">Sin archivo</span>
                                     <?php endif; ?>
@@ -281,7 +294,7 @@ try {
                                                 <form method="POST" action="proveedores.php" enctype="multipart/form-data">
                                                     <input type="hidden" name="editar_proveedor" value="1">
                                                     <input type="hidden" name="proveedor_id" value="<?= $prov['id'] ?>">
-                                                    <input type="hidden" name="rfc_archivo_actual" value="<?= htmlspecialchars($prov['rfc_archivo'] ?? '') ?>">
+                                                    <input type="hidden" name="rfc_archivo_actual" value="<?= htmlspecialchars($rfcNombreLimpio, ENT_QUOTES, 'UTF-8') ?>">
                                                     <div class="modal-header bg-warning text-dark">
                                                         <h5 class="modal-title"><i class="bi bi-pencil-square me-2"></i> Editar Proveedor</h5>
                                                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -298,9 +311,13 @@ try {
                                                         <div class="mb-3">
                                                             <label class="form-label fw-bold">Documento RFC (PDF / Imagen):</label>
                                                             <input type="file" name="rfc_archivo" class="form-control" accept=".pdf,.jpg,.jpeg,.png">
-                                                            <?php if (!empty($prov['rfc_archivo'])): ?>
+                                                            <?php if ($rfcExisteEnDisco): ?>
                                                                 <small class="text-muted d-block mt-1">
-                                                                    Archivo actual: <a href="<?= $directorioUpload . htmlspecialchars($prov['rfc_archivo']) ?>" target="_blank">Ver documento actual</a>
+                                                                    Archivo actual: <a href="<?= htmlspecialchars($rfcRutaCompleta, ENT_QUOTES, 'UTF-8') ?>" target="_blank">Ver documento actual</a>
+                                                                </small>
+                                                            <?php elseif ($rfcNombreLimpio !== ''): ?>
+                                                                <small class="text-danger d-block mt-1">
+                                                                    El archivo registrado (<?= htmlspecialchars($rfcNombreLimpio, ENT_QUOTES, 'UTF-8') ?>) no existe en el servidor; sube uno nuevo para reemplazarlo.
                                                                 </small>
                                                             <?php endif; ?>
                                                         </div>
